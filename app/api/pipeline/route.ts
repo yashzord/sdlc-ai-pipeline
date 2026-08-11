@@ -1,6 +1,6 @@
 import { STAGES, type StageId } from "@/lib/stages";
 import { hasLiveKey } from "@/lib/gemini";
-import { getGithubSession, getJiraSession, getWorkspace } from "@/lib/session";
+import { getGithubSession, getJiraSession, getVercelSession } from "@/lib/session";
 import { runStage, type Artifacts } from "@/lib/pipeline";
 
 export const dynamic = "force-dynamic";
@@ -19,10 +19,6 @@ export async function POST(request: Request) {
   const gh = await getGithubSession();
   if (!gh) {
     return Response.json({ error: "Not signed in with GitHub" }, { status: 401 });
-  }
-  const workspace = await getWorkspace();
-  if (!workspace) {
-    return Response.json({ error: "No workspace repo configured" }, { status: 400 });
   }
   if (!hasLiveKey()) {
     return Response.json(
@@ -49,12 +45,12 @@ export async function POST(request: Request) {
     );
   }
 
-  const jira = await getJiraSession();
+  const [jira, vercel] = await Promise.all([getJiraSession(), getVercelSession()]);
   try {
     const result = await runStage(body.stageId, {
       gh,
       jira,
-      workspace,
+      vercel,
       requirement,
       artifacts: body.artifacts ?? {},
     });

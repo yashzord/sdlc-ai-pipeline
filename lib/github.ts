@@ -61,18 +61,79 @@ export async function getRepo(token: string, ref: RepoRef) {
   );
 }
 
-export async function createRepo(token: string, name: string) {
-  return gh<{ full_name: string; default_branch: string; html_url: string }>(
+export async function createRepo(token: string, name: string, description: string) {
+  return gh<{ full_name: string; default_branch: string; html_url: string; name: string }>(
     token,
     "POST",
     "/user/repos",
     {
       name,
-      description: "Workspace repo managed by SDLC AI Pipeline",
+      description,
       private: false,
       auto_init: true,
+      has_wiki: false,
+      has_projects: false,
     }
   );
+}
+
+export async function enablePages(token: string, ref: RepoRef): Promise<void> {
+  try {
+    await gh(token, "POST", `/repos/${ref.owner}/${ref.repo}/pages`, {
+      build_type: "workflow",
+    });
+  } catch (err) {
+    // 409: already enabled — fine.
+    if (!(err instanceof GithubError && err.status === 409)) throw err;
+  }
+}
+
+export async function latestWorkflowRun(
+  token: string,
+  ref: RepoRef,
+  workflowFile: string,
+  branch: string
+): Promise<{ status: string; conclusion: string | null; html_url: string } | null> {
+  try {
+    const data = await gh<{
+      workflow_runs: Array<{ status: string; conclusion: string | null; html_url: string }>;
+    }>(
+      token,
+      "GET",
+      `/repos/${ref.owner}/${ref.repo}/actions/workflows/${workflowFile}/runs?branch=${encodeURIComponent(branch)}&per_page=1`
+    );
+    return data.workflow_runs[0] ?? null;
+  } catch (err) {
+    if (err instanceof GithubError && err.status === 404) return null;
+    throw err;
+  }
+}
+
+export async function listRepoFiles(
+  token: string,
+  ref: RepoRef,
+  branch: string
+): Promise<string[]> {
+  const data = await gh<{ tree: Array<{ path: string; type: string }> }>(
+    token,
+    "GET",
+    `/repos/${ref.owner}/${ref.repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`
+  );
+  return data.tree.filter((t) => t.type === "blob").map((t) => t.path);
+}
+
+export async function readFileContent(
+  token: string,
+  ref: RepoRef,
+  path: string,
+  branch: string
+): Promise<string> {
+  const data = await gh<{ content: string; encoding: string }>(
+    token,
+    "GET",
+    `/repos/${ref.owner}/${ref.repo}/contents/${path}?ref=${encodeURIComponent(branch)}`
+  );
+  return Buffer.from(data.content, "base64").toString("utf8");
 }
 
 export async function getBranchSha(token: string, ref: RepoRef, branch: string) {

@@ -8,9 +8,9 @@ import { STAGES, type StageId } from "@/lib/stages";
 import type { Artifacts } from "@/lib/pipeline";
 
 const SAMPLES = [
-  "A rate limiter library for API endpoints with sliding-window and burst support",
-  "A markdown table-of-contents generator that handles nested headings and slug collisions",
-  "A form validation engine with composable rules and helpful error messages",
+  "A pomodoro timer with task tracking and daily focus stats",
+  "An expense splitter for roommates that settles who owes whom",
+  "A flashcard study app with spaced repetition and progress tracking",
 ];
 
 const CI_POLL_MS = 15_000;
@@ -189,7 +189,7 @@ export default function Home() {
   }, [refreshMe, reset]);
 
   const released = stages[stages.length - 1]?.status === "done";
-  const readyToRun = Boolean(me?.github && me?.workspace && me?.ai);
+  const readyToRun = Boolean(me?.github && me?.ai);
 
   return (
     <main className="mx-auto max-w-3xl px-4 py-10">
@@ -203,7 +203,7 @@ export default function Home() {
             <div>
               <h1 className="text-lg font-bold text-slate-100">SDLC AI Pipeline</h1>
               <p className="text-xs text-slate-500">
-                Seven AI agents ship a feature through real Jira, GitHub, and CI
+                Type an idea — AI agents ship it as a live app through real tickets, PRs, and CI
               </p>
             </div>
           </div>
@@ -242,8 +242,9 @@ export default function Home() {
             Connect GitHub to start shipping
           </h2>
           <p className="mx-auto mb-6 max-w-md text-sm text-slate-400">
-            The pipeline creates real epics, stories, branches, pull requests, reviews, CI runs, and
-            releases — in a workspace repo on your account. Sign in to let it work on your behalf.
+            Describe an idea and the pipeline ships it for real: its own repo on your account,
+            tickets, a reviewed pull request, tests in CI — and a live app link on GitHub Pages
+            when it releases.
           </p>
           <a
             href="/api/auth/login"
@@ -267,8 +268,8 @@ export default function Home() {
               htmlFor="requirement"
               className="mb-2 block text-xs font-medium text-slate-400"
             >
-              Describe the feature to ship (it will be implemented as a TypeScript module with
-              tests, in your workspace repo)
+              Describe the app to ship — it gets its own repo, a reviewed PR, tests in CI, and a
+              live link when it releases
             </label>
             <textarea
               id="requirement"
@@ -309,9 +310,6 @@ export default function Home() {
                 <RotateCcw className="h-4 w-4" />
                 Reset
               </button>
-              {!me.workspace && (
-                <span className="text-xs text-amber-400">Set up a workspace repo first ↑</span>
-              )}
             </div>
           </section>
 

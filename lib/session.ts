@@ -14,9 +14,14 @@ export interface JiraSession {
   projectKey: string;
 }
 
+export interface VercelSession {
+  token: string;
+  teamId?: string;
+}
+
 const GH_COOKIE = "sdlc_gh";
 const JIRA_COOKIE = "sdlc_jira";
-const WORKSPACE_COOKIE = "sdlc_workspace";
+const VERCEL_COOKIE = "sdlc_vercel";
 
 const COOKIE_OPTS = {
   httpOnly: true,
@@ -48,18 +53,19 @@ export async function setJiraSession(session: JiraSession): Promise<void> {
   jar.set(JIRA_COOKIE, await seal(session), COOKIE_OPTS);
 }
 
-export async function getWorkspace(): Promise<string | null> {
+export async function getVercelSession(): Promise<VercelSession | null> {
   const jar = await cookies();
-  return jar.get(WORKSPACE_COOKIE)?.value ?? null;
+  const raw = jar.get(VERCEL_COOKIE)?.value;
+  return raw ? unseal<VercelSession>(raw) : null;
 }
 
-export async function setWorkspace(repoFullName: string): Promise<void> {
+export async function setVercelSession(session: VercelSession): Promise<void> {
   const jar = await cookies();
-  jar.set(WORKSPACE_COOKIE, repoFullName, { ...COOKIE_OPTS, httpOnly: false });
+  jar.set(VERCEL_COOKIE, await seal(session), COOKIE_OPTS);
 }
 
-export async function clearSession(names: ("gh" | "jira" | "workspace")[]): Promise<void> {
+export async function clearSession(names: ("gh" | "jira" | "vercel")[]): Promise<void> {
   const jar = await cookies();
-  const map = { gh: GH_COOKIE, jira: JIRA_COOKIE, workspace: WORKSPACE_COOKIE };
+  const map = { gh: GH_COOKIE, jira: JIRA_COOKIE, vercel: VERCEL_COOKIE };
   for (const name of names) jar.delete(map[name]);
 }

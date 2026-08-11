@@ -20,7 +20,8 @@ export const STAGES: StageMeta[] = [
     id: "requirements",
     title: "Requirements Analysis",
     role: "Business Analyst",
-    description: "Writes the requirements doc and opens an Epic to track the feature",
+    description:
+      "Writes the requirements doc, creates the product's own repo, and opens the tracking Epic",
   },
   {
     id: "stories",
@@ -32,13 +33,13 @@ export const STAGES: StageMeta[] = [
     id: "architecture",
     title: "Architecture & Design",
     role: "Software Architect",
-    description: "Cuts a feature branch and commits the architecture doc to it",
+    description: "Cuts the feature branch and commits the architecture doc to it",
   },
   {
     id: "code",
     title: "Implementation",
     role: "Senior Engineer",
-    description: "Commits the implementation and opens a pull request; moves tickets to In Progress",
+    description: "Builds the working app (UI + logic), opens a pull request, moves tickets along",
   },
   {
     id: "review",
@@ -57,12 +58,13 @@ export const STAGES: StageMeta[] = [
     id: "tests",
     title: "Test Engineering",
     role: "QA Engineer",
-    description: "Commits Vitest tests to the branch — CI runs them for real",
+    description: "Commits Vitest tests for the logic core — CI runs them for real",
   },
   {
     id: "release",
-    title: "Release",
+    title: "Release & Deploy",
     role: "Release Manager",
-    description: "Waits for green CI, merges the PR, publishes a Release; closes the tickets",
+    description:
+      "Waits for green CI, merges the PR, publishes the release, and waits for the live deployment",
   },
 ];
