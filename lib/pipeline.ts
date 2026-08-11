@@ -656,7 +656,11 @@ async function runRelease(ctx: StageContext): Promise<StageResult> {
 
   // Phase 1 — gate on PR CI, then merge + publish the release.
   if (!artifacts.released) {
-    const headSha = need(artifacts.headSha, "headSha");
+    // The PR's live head is the source of truth — collaborators (human or
+    // otherwise) may have pushed fixes since the pipeline's last commit.
+    const prState = await getPullRequest(ctx.gh.token, ref, prNumber);
+    const headSha = prState.head.sha;
+    artifacts.headSha = headSha;
     const checks = await getCheckRuns(ctx.gh.token, ref, headSha);
     const checkLines = checks.runs
       .map((r) => `- ${r.name}: ${r.status === "completed" ? (r.conclusion ?? "?") : r.status}`)
@@ -689,7 +693,6 @@ async function runRelease(ctx: StageContext): Promise<StageResult> {
       artifacts.releaseNotes = text.slice(0, 6_000);
     }
 
-    const prState = await getPullRequest(ctx.gh.token, ref, prNumber);
     if (!prState.merged) {
       const merge = await mergePullRequest(ctx.gh.token, ref, prNumber);
       if (!merge.merged) throw new Error("GitHub refused the merge — check the PR state");
