@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { LogOut, Play, RotateCcw, Workflow } from "lucide-react";
+import { History, LogOut, Play, RotateCcw, StepForward, Workflow } from "lucide-react";
 import StageCard, { type StageState } from "@/components/StageCard";
 import SetupPanel, { type MeState } from "@/components/SetupPanel";
 import { STAGES, type StageId } from "@/lib/stages";
@@ -31,6 +31,15 @@ async function fetchWithRetry(input: string, init: RequestInit): Promise<Respons
   throw lastErr instanceof Error ? lastErr : new Error("Network request failed");
 }
 
+interface RunSummary {
+  id: string;
+  title: string | null;
+  requirement: string;
+  repo: string | null;
+  status: string;
+  created_at: string;
+}
+
 function initialStages(): StageState[] {
   return STAGES.map((s) => ({
     id: s.id,
@@ -51,6 +60,16 @@ export default function Home() {
   const [running, setRunning] = useState(false);
   const artifactsRef = useRef<Artifacts>({});
   const cancelRef = useRef(false);
+  const runIdRef = useRef<string | null>(null);
+  const [runs, setRuns] = useState<RunSummary[] | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+
+  const loadRuns = useCallback(() => {
+    fetch("/api/runs")
+      .then((r) => r.json())
+      .then((d) => setRuns(d.enabled ? d.runs : null))
+      .catch(() => setRuns(null));
+  }, []);
 
   const refreshMe = useCallback(() => {
     fetch("/api/me")
@@ -63,6 +82,10 @@ export default function Home() {
   useEffect(() => {
     refreshMe();
   }, [refreshMe]);
+
+  useEffect(() => {
+    if (me?.github) loadRuns();
+  }, [me?.github, loadRuns]);
 
   const patchStage = useCallback((id: StageId, patch: Partial<StageState>) => {
     setStages((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
@@ -81,6 +104,7 @@ export default function Home() {
               stageId: stage.id,
               requirement: req,
               artifacts: artifactsRef.current,
+              runId: runIdRef.current ?? undefined,
             }),
           });
           const data = await res.json().catch(() => ({}));
@@ -145,6 +169,18 @@ export default function Home() {
       if (fromIndex === 0) {
         artifactsRef.current = {};
         setStages(initialStages());
+        runIdRef.current = null;
+        try {
+          const res = await fetch("/api/runs", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ requirement: req }),
+          });
+          const data = await res.json().catch(() => ({}));
+          runIdRef.current = data.runId ?? null;
+        } catch {
+          // Persistence is best-effort — run without it.
+        }
       } else {
         setStages((prev) =>
           prev.map((s, i) =>
@@ -171,13 +207,55 @@ export default function Home() {
         if (!ok) break;
       }
       setRunning(false);
+      loadRuns();
     },
-    [requirement, running, executeStage]
+    [requirement, running, executeStage, loadRuns]
   );
+
+  const resumeRun = useCallback(async (id: string) => {
+    try {
+      const res = await fetch(`/api/runs/${id}`);
+      if (!res.ok) return;
+      const { run, stages: stored } = await res.json();
+      cancelRef.current = true;
+      runIdRef.current = run.id;
+      artifactsRef.current = run.artifacts ?? {};
+      setRequirement(run.requirement);
+      setStages(
+        STAGES.map((meta) => {
+          const s = (stored as Array<{ stage_id: string; status: string; output: string | null; links: unknown; model: string | null; note: string | null }>).find(
+            (x) => x.stage_id === meta.id
+          );
+          return {
+            id: meta.id,
+            title: meta.title,
+            role: meta.role,
+            description: meta.description,
+            status: s
+              ? s.status === "done"
+                ? ("done" as const)
+                : s.status === "error"
+                  ? ("error" as const)
+                  : ("pending" as const)
+              : ("pending" as const),
+            output: s?.output ?? "",
+            links: (s?.links as StageState["links"]) ?? [],
+            model: s?.model ?? undefined,
+            note: s?.note ?? undefined,
+          };
+        })
+      );
+      setHistoryOpen(false);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch {
+      // ignore — history stays as-is
+    }
+  }, []);
 
   const reset = useCallback(() => {
     cancelRef.current = true;
     artifactsRef.current = {};
+    runIdRef.current = null;
     setStages(initialStages());
     setRunning(false);
   }, []);
@@ -190,6 +268,10 @@ export default function Home() {
 
   const released = stages[stages.length - 1]?.status === "done";
   const readyToRun = Boolean(me?.github && (me?.serverAi || me?.byokAi));
+  const firstIncomplete = stages.findIndex(
+    (s) => s.status !== "done" && s.status !== "skipped"
+  );
+  const canContinue = !running && firstIncomplete > 0 && requirement.trim().length > 0;
 
   return (
     <main className="mx-auto max-w-3xl px-4 py-10">
@@ -303,6 +385,15 @@ export default function Home() {
                 <Play className="h-4 w-4" />
                 {running ? "Shipping…" : "Ship this feature"}
               </button>
+              {canContinue && (
+                <button
+                  onClick={() => runFrom(firstIncomplete)}
+                  className="flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-emerald-500"
+                >
+                  <StepForward className="h-4 w-4" />
+                  Continue: {STAGES[firstIncomplete].title}
+                </button>
+              )}
               <button
                 onClick={reset}
                 disabled={running && false}
@@ -313,6 +404,65 @@ export default function Home() {
               </button>
             </div>
           </section>
+
+          {/* Run history */}
+          {runs !== null && runs.length > 0 && (
+            <section className="mb-8 rounded-xl border border-slate-800 bg-slate-900/50">
+              <button
+                onClick={() => setHistoryOpen((o) => !o)}
+                className="flex w-full items-center justify-between p-4 text-sm font-semibold text-slate-200"
+              >
+                <span className="flex items-center gap-2">
+                  <History className="h-4 w-4 text-indigo-400" />
+                  Run history
+                  <span className="text-xs font-normal text-slate-500">({runs.length})</span>
+                </span>
+                <span className="text-xs font-normal text-slate-500">
+                  {historyOpen ? "Hide" : "Show"}
+                </span>
+              </button>
+              {historyOpen && (
+                <ul className="border-t border-slate-800">
+                  {runs.map((run) => (
+                    <li
+                      key={run.id}
+                      className="flex items-center justify-between gap-3 border-b border-slate-800/60 px-4 py-3 last:border-b-0"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate text-sm text-slate-200">
+                          {run.title ?? run.requirement.slice(0, 60)}
+                        </p>
+                        <p className="text-xs text-slate-500">
+                          {new Date(run.created_at).toLocaleString()}
+                          {run.repo ? ` · ${run.repo}` : ""}
+                        </p>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
+                            run.status === "released"
+                              ? "bg-emerald-500/15 text-emerald-400"
+                              : run.status === "blocked"
+                                ? "bg-rose-500/15 text-rose-400"
+                                : "bg-amber-500/15 text-amber-400"
+                          }`}
+                        >
+                          {run.status}
+                        </span>
+                        <button
+                          onClick={() => resumeRun(run.id)}
+                          disabled={running}
+                          className="rounded-lg border border-slate-700 px-2.5 py-1 text-xs text-slate-300 transition-colors hover:bg-slate-800 disabled:opacity-40"
+                        >
+                          Open
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          )}
 
           {/* Pipeline */}
           <section>

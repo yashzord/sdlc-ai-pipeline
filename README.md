@@ -55,6 +55,7 @@ your-idea/
 | `GEMINI_MODEL` | Optional model override |
 | `JIRA_CLIENT_ID` / `JIRA_CLIENT_SECRET` | *(optional)* [Atlassian 3LO app](https://developer.atlassian.com/console/myapps) → enables one-click Connect Jira. Callback: `https://<domain>/api/jira/oauth/callback`, scopes `read:jira-work write:jira-work read:me offline_access` |
 | `VERCEL_INTEGRATION_SLUG` / `VERCEL_CLIENT_ID` / `VERCEL_CLIENT_SECRET` | *(optional)* [Vercel integration](https://vercel.com/dashboard/integrations/console) → enables one-click Connect Vercel. Redirect: `https://<domain>/api/vercel/oauth/callback` |
+| `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | *(optional)* Supabase project → enables **run persistence**: refresh-proof runs, resume, and per-user run history (`sdlc_runs` / `sdlc_stage_results` tables, service-role only, scoped by GitHub login) |
 
 OpenRouter's one-click AI connect needs no configuration at all (PKCE).
 

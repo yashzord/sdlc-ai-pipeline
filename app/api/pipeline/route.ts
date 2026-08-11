@@ -7,6 +7,7 @@ import {
   getVercelSession,
 } from "@/lib/session";
 import { runStage, type Artifacts } from "@/lib/pipeline";
+import { dbEnabled, saveStageResult } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -18,6 +19,7 @@ interface PipelineRequest {
   stageId: StageId;
   requirement: string;
   artifacts?: Artifacts;
+  runId?: string;
 }
 
 export async function POST(request: Request) {
@@ -54,6 +56,8 @@ export async function POST(request: Request) {
   const [jiraRaw, vercel] = await Promise.all([getJiraSession(), getVercelSession()]);
   // Jira only participates once a target project has been chosen.
   const jira = jiraRaw?.projectKey ? jiraRaw : null;
+  const runId = typeof body.runId === "string" ? body.runId : undefined;
+
   try {
     const result = await runStage(body.stageId, {
       gh,
@@ -63,9 +67,35 @@ export async function POST(request: Request) {
       requirement,
       artifacts: body.artifacts ?? {},
     });
+
+    if (runId && dbEnabled()) {
+      const isRelease = body.stageId === "release";
+      await saveStageResult(
+        runId,
+        gh.login,
+        {
+          stageId: body.stageId,
+          status: result.pending ? "waiting" : "done",
+          output: result.output,
+          links: result.links,
+          model: result.model,
+        },
+        result.artifacts,
+        isRelease && !result.pending ? "released" : "running"
+      ).catch(() => {});
+    }
     return Response.json(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    if (runId && dbEnabled()) {
+      await saveStageResult(
+        runId,
+        gh.login,
+        { stageId: body.stageId, status: "error", note: message.slice(0, 500) },
+        body.artifacts ?? {},
+        "blocked"
+      ).catch(() => {});
+    }
     return Response.json({ error: message.slice(0, 500) }, { status: 502 });
   }
 }
