@@ -51,7 +51,9 @@ export async function POST(request: Request) {
     );
   }
 
-  const [jira, vercel] = await Promise.all([getJiraSession(), getVercelSession()]);
+  const [jiraRaw, vercel] = await Promise.all([getJiraSession(), getVercelSession()]);
+  // Jira only participates once a target project has been chosen.
+  const jira = jiraRaw?.projectKey ? jiraRaw : null;
   try {
     const result = await runStage(body.stageId, {
       gh,

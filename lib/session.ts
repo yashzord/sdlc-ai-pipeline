@@ -7,12 +7,25 @@ export interface GithubSession {
   avatarUrl: string;
 }
 
-export interface JiraSession {
+export interface JiraBasicSession {
+  kind?: "basic";
   site: string; // https://your-team.atlassian.net
   email: string;
   apiToken: string;
   projectKey: string;
 }
+
+export interface JiraOAuthSession {
+  kind: "oauth";
+  cloudId: string;
+  siteUrl: string;
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number; // epoch ms
+  projectKey?: string;
+}
+
+export type JiraSession = JiraBasicSession | JiraOAuthSession;
 
 export interface VercelSession {
   token: string;

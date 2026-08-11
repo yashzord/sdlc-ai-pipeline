@@ -27,9 +27,9 @@ If CI fails, the release blocks. Failed stages offer "retry from here" (idempote
 ## Integrations (all per-user, no server config)
 
 - **GitHub** (required): OAuth sign-in with `repo workflow` scopes. Tokens sealed with AES-256-GCM into httpOnly cookies — no database.
-- **AI — bring your own key** (optional): the app ships with a shared Gemini default, but any user can connect their own key from **Gemini, Anthropic Claude, Groq, or OpenRouter** (validated with a 1-token call) for their own quota and model choice. Built on the [Vercel AI SDK](https://ai-sdk.dev) — one `generateText`/`generateObject` interface across all providers, with Zod-validated structured output.
-- **Jira** (optional): site + email + API token + project key; epics/stories become Jira issues and get transitioned through the flow. Without it, GitHub Issues are used.
-- **Vercel** (optional): paste an [access token](https://vercel.com/account/settings/tokens); every release additionally deploys to your Vercel account. GitHub Pages remains the zero-config default.
+- **AI** (optional): shared Gemini default out of the box; one-click **Connect with OpenRouter** (OAuth PKCE — no key pasting, hundreds of models), or paste your own **Gemini / Claude / Groq / OpenRouter** key as an advanced option. Built on the [Vercel AI SDK](https://ai-sdk.dev) with Zod-validated structured output.
+- **Jira** (optional): one-click **Connect Jira** via Atlassian OAuth (3LO) with auto-refreshed tokens and an in-app project picker — or paste an API token as an advanced option. Without Jira, GitHub Issues are used.
+- **Vercel** (optional): one-click **Connect Vercel** via a Vercel integration — or paste an [access token](https://vercel.com/account/settings/tokens). Every release then additionally deploys to your Vercel account; GitHub Pages remains the zero-config default.
 
 ## What gets built
 
@@ -51,8 +51,12 @@ your-idea/
 |---|---|
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | A [GitHub OAuth app](https://github.com/settings/developers). Callback: `https://<domain>/api/auth/callback` |
 | `SESSION_SECRET` | 32+ random chars; encrypts session cookies |
-| `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/apikey) key powering the agents |
+| `GEMINI_API_KEY` | Shared default AI ([Google AI Studio](https://aistudio.google.com/apikey)) |
 | `GEMINI_MODEL` | Optional model override |
+| `JIRA_CLIENT_ID` / `JIRA_CLIENT_SECRET` | *(optional)* [Atlassian 3LO app](https://developer.atlassian.com/console/myapps) → enables one-click Connect Jira. Callback: `https://<domain>/api/jira/oauth/callback`, scopes `read:jira-work write:jira-work read:me offline_access` |
+| `VERCEL_INTEGRATION_SLUG` / `VERCEL_CLIENT_ID` / `VERCEL_CLIENT_SECRET` | *(optional)* [Vercel integration](https://vercel.com/dashboard/integrations/console) → enables one-click Connect Vercel. Redirect: `https://<domain>/api/vercel/oauth/callback` |
+
+OpenRouter's one-click AI connect needs no configuration at all (PKCE).
 
 ## Run locally
 

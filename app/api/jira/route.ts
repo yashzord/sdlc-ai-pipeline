@@ -1,4 +1,4 @@
-import { getGithubSession, setJiraSession, clearSession } from "@/lib/session";
+import { getGithubSession, getJiraSession, setJiraSession, clearSession } from "@/lib/session";
 import { validateJira } from "@/lib/jira";
 
 export const dynamic = "force-dynamic";
@@ -32,7 +32,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const session = { site, email, apiToken, projectKey };
+  const session = { kind: "basic" as const, site, email, apiToken, projectKey };
   try {
     const me = await validateJira(session);
     await setJiraSession(session);
@@ -44,6 +44,28 @@ export async function POST(request: Request) {
       { status: 401 }
     );
   }
+}
+
+// Set (or change) the target project — used after the OAuth connect flow.
+export async function PATCH(request: Request) {
+  const gh = await getGithubSession();
+  if (!gh) return Response.json({ error: "Not signed in with GitHub" }, { status: 401 });
+  const session = await getJiraSession();
+  if (!session) return Response.json({ error: "Jira is not connected" }, { status: 400 });
+
+  let body: { projectKey?: string };
+  try {
+    body = await request.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+  const projectKey = (body.projectKey ?? "").trim().toUpperCase();
+  if (!/^[A-Z][A-Z0-9]{1,9}$/.test(projectKey)) {
+    return Response.json({ error: "Invalid project key" }, { status: 400 });
+  }
+
+  await setJiraSession({ ...session, projectKey });
+  return Response.json({ ok: true, projectKey });
 }
 
 export async function DELETE() {
