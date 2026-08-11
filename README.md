@@ -19,8 +19,9 @@ Idea ─▶ Epic ─▶ Stories ─▶ Branch+Design ─▶ Code+PR ─▶ PR Re
 | 3 | Architecture | Cuts `feature/<slug>` branch, commits `docs/<slug>/ARCHITECTURE.md` |
 | 4 | Implementation | Commits a TypeScript module, opens a **pull request**, moves tickets to In Progress |
 | 5 | Code Review | Reviews the **actual PR diff**, posts the review on the PR |
-| 6 | Test Engineering | Commits Vitest tests to the branch → **GitHub Actions runs them** |
-| 7 | Release | Polls CI; when green: **squash-merges the PR**, publishes a **GitHub Release**, closes the tickets |
+| 6 | Rework *(conditional)* | On REQUEST CHANGES: fixes the findings, pushes to the PR, posts a **re-review**; skipped when approved |
+| 7 | Test Engineering | Commits Vitest tests to the branch → **GitHub Actions runs them** |
+| 8 | Release | Polls CI; when green: **squash-merges the PR**, publishes a **GitHub Release**, closes the tickets |
 
 If CI fails, the release stage blocks — exactly like a real pipeline. Failed stages offer "retry from here."
 

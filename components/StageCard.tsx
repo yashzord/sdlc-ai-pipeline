@@ -7,6 +7,7 @@ import {
   Network,
   Code2,
   SearchCheck,
+  Wrench,
   FlaskConical,
   Rocket,
   Check,
@@ -16,6 +17,7 @@ import {
   CircleDashed,
   AlertTriangle,
   ExternalLink,
+  SkipForward,
 } from "lucide-react";
 import Markdown from "./Markdown";
 import type { StageId } from "@/lib/stages";
@@ -27,11 +29,12 @@ const STAGE_ICONS: Record<StageId, React.ComponentType<{ className?: string }>> 
   architecture: Network,
   code: Code2,
   review: SearchCheck,
+  rework: Wrench,
   tests: FlaskConical,
   release: Rocket,
 };
 
-export type StageStatus = "pending" | "running" | "waiting" | "done" | "error";
+export type StageStatus = "pending" | "running" | "waiting" | "done" | "skipped" | "error";
 
 export interface StageState {
   id: StageId;
@@ -90,6 +93,8 @@ export default function StageCard({
             <Loader2 className="h-5 w-5 animate-spin" />
           ) : stage.status === "done" ? (
             <Check className="h-5 w-5" />
+          ) : stage.status === "skipped" ? (
+            <SkipForward className="h-5 w-5" />
           ) : stage.status === "error" ? (
             <AlertTriangle className="h-5 w-5" />
           ) : (
@@ -99,7 +104,9 @@ export default function StageCard({
         {!isLast && (
           <div
             className={`w-px flex-1 ${
-              stage.status === "done" ? "bg-emerald-500/40" : "bg-slate-800"
+              stage.status === "done" || stage.status === "skipped"
+                ? "bg-emerald-500/40"
+                : "bg-slate-800"
             }`}
           />
         )}
@@ -189,7 +196,13 @@ export default function StageCard({
           )}
 
           {stage.note && (
-            <div className="mx-4 mb-3 rounded-md bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+            <div
+              className={`mx-4 mb-3 rounded-md px-3 py-2 text-xs ${
+                stage.status === "error"
+                  ? "bg-rose-500/10 text-rose-300"
+                  : "bg-slate-800/60 text-slate-400"
+              }`}
+            >
               {stage.note}
               {onRetry && stage.status === "error" && (
                 <button

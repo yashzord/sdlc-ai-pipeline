@@ -47,6 +47,8 @@ export interface Artifacts {
   prUrl?: string;
   headSha?: string;
   reviewVerdict?: string;
+  reviewNotes?: string;
+  reworked?: boolean;
   released?: boolean;
 }
 
@@ -321,7 +323,80 @@ async function runReview(ctx: StageContext): Promise<StageResult> {
     output: text,
     links: [{ label: "Posted review", url: review.html_url }],
     model,
-    artifacts: { ...ctx.artifacts, reviewVerdict: verdict },
+    artifacts: { ...ctx.artifacts, reviewVerdict: verdict, reviewNotes: text.slice(0, 6_000) },
+  };
+}
+
+async function runRework(ctx: StageContext): Promise<StageResult> {
+  const slug = need(ctx.artifacts.slug, "slug");
+  const branch = need(ctx.artifacts.branch, "branch");
+  const prNumber = need(ctx.artifacts.prNumber, "prNumber");
+  const moduleFile = need(ctx.artifacts.moduleFile, "moduleFile");
+  const moduleSource = need(ctx.artifacts.moduleSource, "moduleSource");
+  const reviewNotes = need(ctx.artifacts.reviewNotes, "reviewNotes");
+
+  const { data, model } = await generateJson<{
+    note: string;
+    addressed: string[];
+    source: string;
+  }>(
+    `${SHARED_RULES}\nYou are the senior engineer whose pull request received a REQUEST CHANGES review. Fix every finding properly — no shortcuts.`,
+    `Your module (${moduleFile}):\n\n\`\`\`typescript\n${moduleSource}\n\`\`\`\n\nThe review:\n${reviewNotes}\n\nReturn JSON:\n- "note": 2-3 sentence markdown summary of the rework\n- "addressed": array of one-line strings, one per finding you fixed ("Finding 1: ...")\n- "source": the COMPLETE revised file (same constraints: standalone TypeScript, zero imports)`,
+    0.3
+  );
+
+  const ref = repoRef(ctx);
+  const commit = await commitFile(
+    ctx.gh.token,
+    ref,
+    branch,
+    moduleFile,
+    data.source,
+    `fix(${slug}): address code review findings`
+  );
+
+  // Re-review the revised module against the original findings.
+  const { text: reReview } = await generateWithGemini(
+    `${SHARED_RULES}\nYou are the same staff engineer re-reviewing after the author addressed your findings. Respond in clean markdown.`,
+    `Your original review:\n${reviewNotes}\n\nThe revised module:\n\n\`\`\`typescript\n${data.source}\n\`\`\`\n\nProduce:\n## Verdict\nOne of exactly: APPROVE, APPROVE WITH COMMENTS, REQUEST CHANGES — one-line justification focused on whether the findings were resolved.\n## Findings Resolution\nOne line per original finding: resolved or not, and why.`,
+    0.3
+  );
+  const review = await createPullRequestReview(
+    ctx.gh.token,
+    ref,
+    prNumber,
+    `${reReview}\n\n---\n_Re-review after rework, posted by SDLC AI Pipeline._`,
+    "COMMENT"
+  );
+
+  const verdict = /REQUEST CHANGES/i.test(reReview)
+    ? "REQUEST CHANGES"
+    : /APPROVE WITH COMMENTS/i.test(reReview)
+      ? "APPROVE WITH COMMENTS"
+      : "APPROVE";
+
+  const output = `${data.note}\n\n## Findings Addressed\n${data.addressed
+    .map((a) => `- ${a}`)
+    .join("\n")}\n\n\`\`\`typescript\n${data.source}\n\`\`\`\n\n## Re-review\n${reReview}${
+    verdict === "REQUEST CHANGES"
+      ? "\n\n> Re-review still requests changes after one rework iteration — proceeding with the objections on record (single-iteration policy)."
+      : ""
+  }`;
+
+  return {
+    output,
+    links: [
+      { label: "Fix commit", url: commit.html_url },
+      { label: "Re-review", url: review.html_url },
+    ],
+    model,
+    artifacts: {
+      ...ctx.artifacts,
+      moduleSource: data.source,
+      headSha: commit.sha,
+      reviewVerdict: verdict,
+      reworked: true,
+    },
   };
 }
 
@@ -334,7 +409,7 @@ async function runTests(ctx: StageContext): Promise<StageResult> {
   const moduleBase = moduleFile.split("/").pop()!.replace(/\.ts$/, "");
   const { data, model } = await generateJson<{ note: string; source: string }>(
     `${SHARED_RULES}\nYou are a QA automation engineer. Write Vitest tests that would actually fail on real bugs.`,
-    `Module under test (import it as "./${moduleBase}"):\n\n\`\`\`typescript\n${moduleSource}\n\`\`\`\n\nReview findings to cover:\n${ctx.artifacts.reviewVerdict ?? ""}\n\nReturn JSON:\n- "note": 2 sentence markdown test strategy\n- "source": complete Vitest test file (import { describe, it, expect } from "vitest"; import the module from "./${moduleBase}"). 6-10 focused test cases covering happy path, edge cases, and error handling. The tests MUST only use exports that actually exist in the module source above.`,
+    `Module under test (import it as "./${moduleBase}"):\n\n\`\`\`typescript\n${moduleSource}\n\`\`\`\n\nReview findings to cover:\n${ctx.artifacts.reviewNotes ?? ctx.artifacts.reviewVerdict ?? ""}\n\nReturn JSON:\n- "note": 2 sentence markdown test strategy\n- "source": complete Vitest test file (import { describe, it, expect } from "vitest"; import the module from "./${moduleBase}"). 6-10 focused test cases covering happy path, edge cases, and error handling. The tests MUST only use exports that actually exist in the module source above.`,
     0.3
   );
 
@@ -455,6 +530,7 @@ const HANDLERS: Record<StageId, (ctx: StageContext) => Promise<StageResult>> = {
   architecture: runArchitecture,
   code: runCode,
   review: runReview,
+  rework: runRework,
   tests: runTests,
   release: runRelease,
 };

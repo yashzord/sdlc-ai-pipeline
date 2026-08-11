@@ -155,6 +155,18 @@ export default function Home() {
 
       for (let i = fromIndex; i < STAGES.length; i++) {
         if (cancelRef.current) break;
+        // The rework stage is a conditional gate: it only runs when the
+        // review demanded changes.
+        if (
+          STAGES[i].id === "rework" &&
+          artifactsRef.current.reviewVerdict !== "REQUEST CHANGES"
+        ) {
+          patchStage("rework", {
+            status: "skipped",
+            note: `Skipped — review verdict was ${artifactsRef.current.reviewVerdict ?? "APPROVE"}, no rework required.`,
+          });
+          continue;
+        }
         const ok = await executeStage(STAGES[i], req);
         if (!ok) break;
       }

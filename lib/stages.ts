@@ -4,6 +4,7 @@ export type StageId =
   | "architecture"
   | "code"
   | "review"
+  | "rework"
   | "tests"
   | "release";
 
@@ -44,6 +45,13 @@ export const STAGES: StageMeta[] = [
     title: "Code Review",
     role: "Staff Engineer",
     description: "Reviews the actual PR diff and posts the review on the pull request",
+  },
+  {
+    id: "rework",
+    title: "Rework",
+    role: "Senior Engineer",
+    description:
+      "Runs only on REQUEST CHANGES: fixes the review findings, pushes to the PR, gets re-reviewed",
   },
   {
     id: "tests",
