@@ -84,7 +84,21 @@ export default function Home() {
             }),
           });
           const data = await res.json().catch(() => ({}));
-          if (!res.ok) throw new Error(data.error ?? `Stage failed with HTTP ${res.status}`);
+          if (!res.ok) {
+            const msg = data.error ?? `Stage failed with HTTP ${res.status}`;
+            // Free-tier AI quotas are per-minute — wait out rate limits
+            // instead of failing the run.
+            if (/429|quota|rate limit/i.test(msg) && attempt < CI_MAX_POLLS) {
+              patchStage(stage.id, {
+                status: "waiting",
+                note: "AI rate limit hit — waiting 30s and retrying automatically…",
+              });
+              if (cancelRef.current) return false;
+              await new Promise((r) => setTimeout(r, 30_000));
+              continue;
+            }
+            throw new Error(msg);
+          }
 
           artifactsRef.current = data.artifacts ?? artifactsRef.current;
 
@@ -104,6 +118,7 @@ export default function Home() {
             output: data.output,
             links: data.links ?? [],
             model: data.model,
+            note: undefined,
             durationMs: performance.now() - started,
           });
           return true;
