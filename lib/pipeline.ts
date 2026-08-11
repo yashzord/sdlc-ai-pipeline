@@ -136,9 +136,14 @@ const SCAFFOLD_TSCONFIG = `{
 }
 `;
 
-const SCAFFOLD_VITE = `import { defineConfig } from "vite";
+const SCAFFOLD_VITE = `import { defineConfig } from "vitest/config";
 
-export default defineConfig({ base: "./" });
+export default defineConfig({
+  base: "./",
+  // Globals on as a safety net so tests using afterEach/vi without importing
+  // them still run; the test prompt asks for explicit imports regardless.
+  test: { globals: true },
+});
 `;
 
 const SCAFFOLD_INDEX = (title: string) => `<!doctype html>
@@ -617,7 +622,7 @@ async function runTests(ctx: StageContext): Promise<StageResult> {
   const { data, model } = await aiJson(
     ctx.ai,
     `${SHARED_RULES}\nYou are a QA automation engineer. Write Vitest tests that would actually fail on real bugs.`,
-    `Module under test — src/app.ts (import it as "./app"):\n\n\`\`\`typescript\n${moduleSource}\n\`\`\`\n\nReview findings to cover:\n${ctx.artifacts.reviewNotes ?? ""}\n\nReturn JSON:\n- "note": 2 sentence markdown test strategy\n- "source": complete Vitest test file (import { describe, it, expect } from "vitest"; import from "./app"). 6-10 focused test cases covering happy path, edge cases, and error handling. The tests MUST only use exports that actually exist in the module source above. Pure logic tests only — no DOM.`,
+    `Module under test — src/app.ts (import it as "./app"):\n\n\`\`\`typescript\n${moduleSource}\n\`\`\`\n\nReview findings to cover:\n${ctx.artifacts.reviewNotes ?? ""}\n\nReturn JSON:\n- "note": 2 sentence markdown test strategy\n- "source": complete Vitest test file importing from "./app". CRITICAL: import EVERY vitest API you use from "vitest" — e.g. import { describe, it, expect, beforeEach, afterEach, vi } from "vitest" — nothing is global. 6-10 focused test cases covering happy path, edge cases, and error handling. The tests MUST only use exports that actually exist in the module source above. Pure logic tests only — no DOM. If the module uses localStorage, stub it via a minimal in-memory globalThis.localStorage in beforeEach.`,
     z.object({ note: z.string(), source: z.string() }),
     0.3
   );
