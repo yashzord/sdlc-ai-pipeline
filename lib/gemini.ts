@@ -20,8 +20,18 @@ async function attempt(
   model: string,
   system: string,
   prompt: string,
-  temperature: number
+  temperature: number,
+  json: boolean
 ): Promise<GeminiResult> {
+  const generationConfig: Record<string, unknown> = {
+    temperature,
+    maxOutputTokens: 8192,
+  };
+  if (json) generationConfig.responseMimeType = "application/json";
+  // Gemini 2.5 models spend output budget on internal thinking by default,
+  // which can truncate long structured responses — turn it off.
+  if (model.includes("2.5")) generationConfig.thinkingConfig = { thinkingBudget: 0 };
+
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
     {
@@ -30,43 +40,43 @@ async function attempt(
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: system }] },
         contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig: { temperature, maxOutputTokens: 4096 },
+        generationConfig,
       }),
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(40_000),
     }
   );
   if (!res.ok) {
     const body = await res.text();
-    const err = new Error(`Gemini ${model} returned ${res.status}: ${body.slice(0, 200)}`);
-    (err as Error & { status?: number }).status = res.status;
-    throw err;
+    throw new Error(`Gemini ${model} returned ${res.status}: ${body.slice(0, 200)}`);
   }
   const data = await res.json();
+  const finishReason: string | undefined = data?.candidates?.[0]?.finishReason;
   const text: string | undefined = data?.candidates?.[0]?.content?.parts
     ?.map((p: { text?: string }) => p.text ?? "")
     .join("");
   if (!text || !text.trim()) throw new Error(`Gemini ${model} returned an empty response`);
+  if (finishReason === "MAX_TOKENS") {
+    throw new Error(`Gemini ${model} response was truncated (MAX_TOKENS)`);
+  }
   return { text: text.trim(), model };
 }
 
-// Tries each candidate model; on rate limits / server errors makes a second
-// pass after a short backoff. Bounded by an overall deadline so the route
-// stays inside its serverless time budget.
-export async function generateWithGemini(
+async function generate(
   system: string,
   prompt: string,
-  temperature = 0.5
+  temperature: number,
+  json: boolean
 ): Promise<GeminiResult> {
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new Error("GEMINI_API_KEY is not set");
 
-  const deadline = Date.now() + 45_000;
+  const deadline = Date.now() + 50_000;
   let lastError: Error | null = null;
   for (let pass = 0; pass < 2; pass++) {
     for (const model of modelCandidates()) {
       if (Date.now() > deadline) break;
       try {
-        return await attempt(key, model, system, prompt, temperature);
+        return await attempt(key, model, system, prompt, temperature, json);
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
       }
@@ -78,24 +88,39 @@ export async function generateWithGemini(
   throw lastError ?? new Error("All Gemini model candidates failed");
 }
 
-// Strict-JSON variant: strips code fences and retries once on parse failure.
+export async function generateWithGemini(
+  system: string,
+  prompt: string,
+  temperature = 0.5
+): Promise<GeminiResult> {
+  return generate(system, prompt, temperature, false);
+}
+
+function extractJson(text: string): string {
+  const cleaned = text
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/, "")
+    .trim();
+  if (cleaned.startsWith("{") || cleaned.startsWith("[")) return cleaned;
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  if (start !== -1 && end > start) return cleaned.slice(start, end + 1);
+  return cleaned;
+}
+
 export async function generateJson<T>(
   system: string,
   prompt: string,
   temperature = 0.3
 ): Promise<{ data: T; model: string }> {
-  const jsonSystem = `${system}\nRespond with ONLY valid JSON. No markdown fences, no commentary.`;
+  const jsonSystem = `${system}\nRespond with ONLY a single valid JSON object matching the requested shape. No commentary.`;
   let lastError: Error | null = null;
   for (let i = 0; i < 2; i++) {
-    const { text, model } = await generateWithGemini(jsonSystem, prompt, temperature);
-    const cleaned = text
-      .replace(/^```(?:json)?\s*/i, "")
-      .replace(/\s*```$/, "")
-      .trim();
+    const { text, model } = await generate(jsonSystem, prompt, temperature, true);
     try {
-      return { data: JSON.parse(cleaned) as T, model };
+      return { data: JSON.parse(extractJson(text)) as T, model };
     } catch {
-      lastError = new Error(`Model returned invalid JSON: ${cleaned.slice(0, 120)}`);
+      lastError = new Error(`Model returned invalid JSON: ${text.slice(0, 120)}`);
     }
   }
   throw lastError ?? new Error("JSON generation failed");
