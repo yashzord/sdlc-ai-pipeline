@@ -31,8 +31,11 @@ async function gh<T>(
   if (res.status === 204) return undefined as T;
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
+    const details = Array.isArray(data.errors)
+      ? `: ${data.errors.map((e: { message?: string }) => e.message ?? JSON.stringify(e)).join("; ").slice(0, 200)}`
+      : "";
     throw new GithubError(
-      `GitHub ${method} ${path} → ${res.status}: ${data.message ?? "unknown error"}`,
+      `GitHub ${method} ${path} → ${res.status}: ${data.message ?? "unknown error"}${details}`,
       res.status
     );
   }
@@ -159,6 +162,15 @@ export async function createPullRequest(
     `/repos/${ref.owner}/${ref.repo}/pulls`,
     { title, head, base, body }
   );
+}
+
+export async function findOpenPullRequest(token: string, ref: RepoRef, headBranch: string) {
+  const prs = await gh<Array<{ number: number; html_url: string; head: { sha: string } }>>(
+    token,
+    "GET",
+    `/repos/${ref.owner}/${ref.repo}/pulls?head=${ref.owner}:${encodeURIComponent(headBranch)}&state=open`
+  );
+  return prs[0] ?? null;
 }
 
 export async function getPullRequestFiles(token: string, ref: RepoRef, prNumber: number) {

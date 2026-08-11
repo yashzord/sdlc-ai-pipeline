@@ -2,14 +2,17 @@ import type { StageId } from "./stages";
 import type { GithubSession, JiraSession } from "./session";
 import { generateJson, generateWithGemini } from "./gemini";
 import {
+  GithubError,
   commitFile,
   createBranch,
   createIssue,
   createPullRequest,
   createPullRequestReview,
   createRelease,
+  findOpenPullRequest,
   getBranchSha,
   getCheckRuns,
+  getPullRequest,
   getPullRequestFiles,
   getRepo,
   mergePullRequest,
@@ -181,7 +184,12 @@ async function runArchitecture(ctx: StageContext): Promise<StageResult> {
   const repo = await getRepo(ctx.gh.token, ref);
   const baseSha = await getBranchSha(ctx.gh.token, ref, repo.default_branch);
   const branch = `feature/${slug}`;
-  await createBranch(ctx.gh.token, ref, branch, baseSha);
+  try {
+    await createBranch(ctx.gh.token, ref, branch, baseSha);
+  } catch (err) {
+    // Branch already exists from an earlier attempt of this stage — reuse it.
+    if (!(err instanceof GithubError && err.status === 422)) throw err;
+  }
   const commit = await commitFile(
     ctx.gh.token,
     ref,
@@ -232,14 +240,18 @@ async function runCode(ctx: StageContext): Promise<StageResult> {
     .map((s) => (s.issueNumber ? `Closes #${s.issueNumber}` : s.jiraKey))
     .filter(Boolean)
     .join("\n");
-  const pr = await createPullRequest(
-    ctx.gh.token,
-    ref,
-    branch,
-    need(ctx.artifacts.defaultBranch, "defaultBranch"),
-    `feat: ${ctx.artifacts.featureTitle}`,
-    `${data.note}\n\nEpic: ${ctx.artifacts.epic?.jiraKey ?? `#${ctx.artifacts.epic?.issueNumber}`}\n${closes}\n\n---\n_Opened by SDLC AI Pipeline._`
-  );
+  // A retry of this stage may find the PR already open — reuse it.
+  let pr = await findOpenPullRequest(ctx.gh.token, ref, branch);
+  if (!pr) {
+    pr = await createPullRequest(
+      ctx.gh.token,
+      ref,
+      branch,
+      need(ctx.artifacts.defaultBranch, "defaultBranch"),
+      `feat: ${ctx.artifacts.featureTitle}`,
+      `${data.note}\n\nEpic: ${ctx.artifacts.epic?.jiraKey ?? `#${ctx.artifacts.epic?.issueNumber}`}\n${closes}\n\n---\n_Opened by SDLC AI Pipeline._`
+    );
+  }
 
   const jiraNotes: string[] = [];
   if (ctx.jira) {
@@ -268,7 +280,7 @@ async function runCode(ctx: StageContext): Promise<StageResult> {
       moduleSource: data.source,
       prNumber: pr.number,
       prUrl: pr.html_url,
-      headSha: pr.head.sha,
+      headSha: commit.sha,
     },
   };
 }
@@ -381,17 +393,28 @@ async function runRelease(ctx: StageContext): Promise<StageResult> {
     0.5
   );
 
-  const merge = await mergePullRequest(ctx.gh.token, ref, prNumber);
-  if (!merge.merged) throw new Error("GitHub refused the merge — check the PR state");
+  // Retry-safe: skip the merge if a previous attempt already merged the PR.
+  const prState = await getPullRequest(ctx.gh.token, ref, prNumber);
+  if (!prState.merged) {
+    const merge = await mergePullRequest(ctx.gh.token, ref, prNumber);
+    if (!merge.merged) throw new Error("GitHub refused the merge — check the PR state");
+  }
 
   const tag = `release/${ctx.artifacts.slug}`;
-  const release = await createRelease(
-    ctx.gh.token,
-    ref,
-    tag,
-    `${ctx.artifacts.featureTitle}`,
-    `${text}\n\n---\n_Released by SDLC AI Pipeline. PR #${prNumber}._`
-  );
+  let release: { html_url: string };
+  try {
+    release = await createRelease(
+      ctx.gh.token,
+      ref,
+      tag,
+      `${ctx.artifacts.featureTitle}`,
+      `${text}\n\n---\n_Released by SDLC AI Pipeline. PR #${prNumber}._`
+    );
+  } catch (err) {
+    // Tag already released by a previous attempt — treat as done.
+    if (!(err instanceof GithubError && err.status === 422)) throw err;
+    release = { html_url: `https://github.com/${ctx.workspace}/releases/tag/${tag}` };
+  }
 
   const jiraNotes: string[] = [];
   if (ctx.jira) {
