@@ -1,5 +1,7 @@
 # SDLC AI Pipeline
 
+**Live: [sdlc-ai-pipeline.vercel.app](https://sdlc-ai-pipeline.vercel.app)**
+
 An end-to-end demonstration of **AI-automated software delivery**: type a product idea, and seven specialist AI agents take it through the full software development lifecycle — the same stages a real engineering org runs, in the same order.
 
 ```
