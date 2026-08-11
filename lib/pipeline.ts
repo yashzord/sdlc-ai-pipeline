@@ -17,9 +17,11 @@ import {
   getBranchSha,
   getCheckRuns,
   getPullRequest,
+  getJobLog,
   getPullRequestFiles,
   latestWorkflowRun,
   listRepoFiles,
+  listWorkflowJobs,
   mergePullRequest,
   parseRepo,
   readFileContent,
@@ -41,6 +43,12 @@ export interface TicketRef {
 }
 
 export interface Artifacts {
+  planVerdict?: "GO" | "NO-GO";
+  planningDoc?: string;
+  openQuestions?: string[];
+  clarifications?: string;
+  designApproved?: boolean;
+  releaseApproved?: boolean;
   slug?: string;
   featureTitle?: string;
   repo?: string; // owner/name of the idea's own repository
@@ -57,12 +65,27 @@ export interface Artifacts {
   reviewVerdict?: string;
   reviewNotes?: string;
   reworked?: boolean;
+  ciFixAttempts?: number;
+  ciGreen?: boolean;
+  uatDeploymentId?: string;
+  uatPreviewUrl?: string;
+  uatApproved?: boolean;
   released?: boolean;
   releaseUrl?: string;
   releaseNotes?: string;
   vercelDeploymentId?: string;
   vercelUrl?: string;
 }
+
+export interface GateInput {
+  answers?: string[];
+  approved?: boolean;
+  comment?: string;
+}
+
+export type GateSpec =
+  | { type: "questions"; questions: string[] }
+  | { type: "approval"; title: string; description: string; allowChanges?: boolean };
 
 export interface StageContext {
   gh: GithubSession;
@@ -71,6 +94,7 @@ export interface StageContext {
   ai: AIConfig;
   requirement: string;
   artifacts: Artifacts;
+  input?: GateInput;
 }
 
 const FILE_SCHEMA = z.object({ path: z.string(), content: z.string() });
@@ -81,6 +105,7 @@ export interface StageResult {
   artifacts: Artifacts;
   model?: string;
   pending?: boolean;
+  gate?: GateSpec;
 }
 
 const SHARED_RULES = `You are one specialist agent inside an automated SDLC pipeline that ships real products (GitHub repos, Jira tickets, CI, live deployments).
@@ -232,12 +257,178 @@ Built and shipped end-to-end by the [SDLC AI Pipeline](https://sdlc-ai-pipeline.
 
 /* ---------------------------------- stages --------------------------------- */
 
+async function runPlan(ctx: StageContext): Promise<StageResult> {
+  const { data, model } = await aiJson(
+    ctx.ai,
+    `${SHARED_RULES}\nYou are an experienced project manager running the SDLC planning phase. Be honest — a genuinely infeasible or out-of-scope idea gets a NO-GO.`,
+    `Product idea:\n\n"${ctx.requirement}"\n\n${APP_CONSTRAINTS}\n\nRun the planning phase. Return JSON:\n- "verdict": exactly "GO" or "NO-GO". NO-GO if the idea cannot be delivered as a client-side web app under the constraints (needs a backend, real payments, native hardware, external APIs, multi-user realtime), is illegal/harmful, or is too vague to scope.\n- "feasibility": array of exactly 5 objects {"dimension": one of "Technical"|"Economic"|"Operational"|"Legal & Regulatory"|"Schedule", "rating": "high"|"medium"|"low", "assessment": 1-2 sentences specific to this idea}\n- "charter": markdown with ## Objectives (3 bullets), ## Scope (In / Out subsections), ## Success Criteria (3 measurable bullets), ## Assumptions (2-3 bullets)\n- "risks": markdown risk register: 3-4 risks, each with category, likelihood, impact, and mitigation\n- "estimate": markdown: expected pipeline stages ahead and rough timeline for a human team doing the same (for contrast)`,
+    z.object({
+      verdict: z.enum(["GO", "NO-GO"]),
+      feasibility: z.array(
+        z.object({ dimension: z.string(), rating: z.string(), assessment: z.string() })
+      ),
+      charter: z.string(),
+      risks: z.string(),
+      estimate: z.string(),
+    }),
+    0.4
+  );
+
+  const feasibilityMd = data.feasibility
+    .map((f) => `- **${f.dimension}** (${f.rating}): ${f.assessment}`)
+    .join("\n");
+  const planningDoc = `# Project Plan\n\n## Feasibility Study\n${feasibilityMd}\n\n**Verdict: ${data.verdict}**\n\n${data.charter}\n\n## Risk Register\n${data.risks}\n\n## Estimate\n${data.estimate}`;
+
+  const output =
+    data.verdict === "NO-GO"
+      ? `## Feasibility Verdict: NO-GO ⛔\n\n${feasibilityMd}\n\n${data.risks}\n\n> The planning phase rejected this idea — a real SDLC stops here rather than building something infeasible. Refine the idea and run again.`
+      : `## Feasibility Verdict: GO ✅\n\n${feasibilityMd}\n\n${data.charter}\n\n## Risk Register\n${data.risks}\n\n## Estimate\n${data.estimate}`;
+
+  return {
+    output,
+    links: [],
+    model,
+    artifacts: {
+      ...ctx.artifacts,
+      planVerdict: data.verdict,
+      planningDoc: planningDoc.slice(0, 8_000),
+    },
+  };
+}
+
+async function runClarify(ctx: StageContext): Promise<StageResult> {
+  const questions = ctx.artifacts.openQuestions ?? [];
+  if (questions.length === 0) {
+    return {
+      output: "## Stakeholder Clarification\n\nThe analyst raised no open questions — proceeding.",
+      links: [],
+      artifacts: { ...ctx.artifacts, clarifications: "No open questions were raised." },
+    };
+  }
+
+  if (!ctx.input?.answers) {
+    return {
+      output:
+        "## Stakeholder Clarification\n\nThe business analyst needs your answers before the backlog is written — in a real project, these decisions are the stakeholder's, not the team's.",
+      links: [],
+      artifacts: ctx.artifacts,
+      gate: { type: "questions", questions },
+    };
+  }
+
+  const qa = questions
+    .map((q, i) => `**Q: ${q}**\nA: ${ctx.input!.answers![i]?.trim() || "(stakeholder deferred — use your best judgment)"}`)
+    .join("\n\n");
+  const { text, model } = await aiText(
+    ctx.ai,
+    `${SHARED_RULES}\nYou are the business analyst incorporating stakeholder answers. Respond in clean markdown.`,
+    `Product: "${ctx.artifacts.featureTitle}"\n\nStakeholder Q&A:\n${qa}\n\nWrite a short "Clarified Decisions" section: for each answer, one bullet stating the concrete decision and its impact on scope, design, or priorities. Under 200 words.`,
+    0.4
+  );
+
+  const ref = repoRef(ctx);
+  const doc = `# Stakeholder Clarifications\n\n${qa}\n\n${text}\n`;
+  const commit = await commitFile(
+    ctx.gh.token,
+    ref,
+    need(ctx.artifacts.defaultBranch, "defaultBranch"),
+    "docs/CLARIFICATIONS.md",
+    doc,
+    "docs: stakeholder clarifications"
+  );
+
+  return {
+    output: `${qa}\n\n${text}`,
+    links: [{ label: "CLARIFICATIONS.md", url: commit.html_url }],
+    model,
+    artifacts: { ...ctx.artifacts, clarifications: `${qa}\n\n${text}`.slice(0, 6_000) },
+  };
+}
+
+async function runDesignApproval(ctx: StageContext): Promise<StageResult> {
+  if (!ctx.input) {
+    return {
+      output:
+        "## Design Review\n\nReview the architecture above. Approve it, or request changes — no code gets written against an unreviewed design.",
+      links: [],
+      artifacts: ctx.artifacts,
+      gate: {
+        type: "approval",
+        title: "Approve the architecture?",
+        description: "Approve to start implementation, or request changes with a comment (one revision cycle).",
+        allowChanges: true,
+      },
+    };
+  }
+
+  if (ctx.input.approved) {
+    return {
+      output: `## Design Approved ✅\n\nApproved by **${ctx.gh.login}**${ctx.input.comment ? ` — "${ctx.input.comment}"` : ""}. Implementation may begin.`,
+      links: [],
+      artifacts: { ...ctx.artifacts, designApproved: true },
+    };
+  }
+
+  // Change request: one revision cycle, then proceed with the revision noted.
+  const ref = repoRef(ctx);
+  const branch = need(ctx.artifacts.branch, "branch");
+  const current = await readFileContent(ctx.gh.token, ref, "docs/ARCHITECTURE.md", branch);
+  const { text, model } = await aiText(
+    ctx.ai,
+    `${SHARED_RULES}\nYou are the software architect revising a design after review feedback. Respond with the COMPLETE revised architecture document in clean markdown (no preamble).`,
+    `Current architecture document:\n\n${current}\n\nReviewer feedback from ${ctx.gh.login}:\n"${ctx.input.comment ?? "No specifics given — tighten the design."}"\n\n${APP_CONSTRAINTS}\n\nRevise the document to address the feedback.`,
+    0.4
+  );
+  const commit = await commitFile(
+    ctx.gh.token,
+    ref,
+    branch,
+    "docs/ARCHITECTURE.md",
+    text,
+    "docs: revise architecture per design review"
+  );
+
+  return {
+    output: `## Design Revised per Review 🔁\n\nFeedback: "${ctx.input.comment}"\n\n${text}\n\n> One revision cycle applied — approved to proceed.`,
+    links: [{ label: "Revised ARCHITECTURE.md", url: commit.html_url }],
+    model,
+    artifacts: { ...ctx.artifacts, designApproved: true },
+  };
+}
+
+async function runReleaseApproval(ctx: StageContext): Promise<StageResult> {
+  if (!ctx.input?.approved) {
+    return {
+      output:
+        "## Release Approval\n\nEverything is built, reviewed, and tested. In a real pipeline a human signs off before production — that's you.",
+      links: ctx.artifacts.prUrl ? [{ label: `Final PR #${ctx.artifacts.prNumber}`, url: ctx.artifacts.prUrl }] : [],
+      artifacts: ctx.artifacts,
+      gate: {
+        type: "approval",
+        title: "Ship v1.0.0 to production?",
+        description: "Approving merges the pull request, publishes the release, and deploys the live app.",
+      },
+    };
+  }
+
+  return {
+    output: `## Release Approved ✅\n\nSigned off by **${ctx.gh.login}**${ctx.input.comment ? ` — "${ctx.input.comment}"` : ""}. Proceeding to deploy.`,
+    links: [],
+    artifacts: { ...ctx.artifacts, releaseApproved: true },
+  };
+}
+
 async function runRequirements(ctx: StageContext): Promise<StageResult> {
   const { data, model } = await aiJson(
     ctx.ai,
     `${SHARED_RULES}\nYou are a senior business analyst.`,
-    `Raw product idea:\n\n"${ctx.requirement}"\n\n${APP_CONSTRAINTS}\n\nReturn JSON with:\n- "title": short product title (max 6 words)\n- "slug": kebab-case repository name (max 4 words, no suffixes)\n- "markdown": a requirements document with sections: ## Functional Requirements (numbered FR-1..., 5-8 items with one-line rationale, all achievable in a client-side app), ## Non-Functional Requirements (NFR-1..., 4-5 items), ## Out of Scope (3 bullets), ## Open Questions (3 numbered questions)`,
-    z.object({ title: z.string(), slug: z.string(), markdown: z.string() }),
+    `Raw product idea:\n\n"${ctx.requirement}"\n\n${APP_CONSTRAINTS}\n\nReturn JSON with:\n- "title": short product title (max 6 words)\n- "slug": kebab-case repository name (max 4 words, no suffixes)\n- "markdown": a requirements document with sections: ## Functional Requirements (numbered FR-1..., 5-8 items with one-line rationale, all achievable in a client-side app), ## Non-Functional Requirements (NFR-1..., 4-5 items), ## Out of Scope (3 bullets), ## Open Questions (3 numbered questions a stakeholder must decide — genuine forks in scope or behavior, not rhetorical)\n- "questions": those same 3 open questions as a plain array of strings`,
+    z.object({
+      title: z.string(),
+      slug: z.string(),
+      markdown: z.string(),
+      questions: z.array(z.string()),
+    }),
     0.5
   );
 
@@ -274,6 +465,10 @@ async function runRequirements(ctx: StageContext): Promise<StageResult> {
 
   const scaffold: Array<[string, string]> = [
     [".gitignore", "node_modules/\ndist/\n*.tsbuildinfo\n"],
+    ...(ctx.artifacts.planningDoc
+      ? ([["docs/PLANNING.md", `${ctx.artifacts.planningDoc}\n`]] as Array<[string, string]>)
+      : []),
+    ["docs/REQUIREMENTS.md", `# Requirements — ${data.title}\n\n${data.markdown}\n`],
     ["package.json", SCAFFOLD_PACKAGE(slug)],
     ["tsconfig.json", SCAFFOLD_TSCONFIG],
     ["vite.config.ts", SCAFFOLD_VITE],
@@ -311,6 +506,7 @@ async function runRequirements(ctx: StageContext): Promise<StageResult> {
     model,
     artifacts: {
       ...ctx.artifacts,
+      openQuestions: data.questions.slice(0, 4),
       slug,
       featureTitle: data.title,
       repo: repo.full_name,
@@ -327,7 +523,11 @@ async function runStories(ctx: StageContext): Promise<StageResult> {
   const { data, model } = await aiJson(
     ctx.ai,
     `${SHARED_RULES}\nYou are a product owner writing sprint-ready user stories.`,
-    `Product: "${ctx.artifacts.featureTitle}"\nIdea: "${ctx.requirement}"\n\nReturn JSON: {"stories": [...]} with 4-6 stories covering the v1 of this client-side app. Each story:\n- "title": imperative, max 10 words\n- "points": 1, 2, 3, 5 or 8\n- "markdown": "As a <role>, I want <capability> so that <benefit>." followed by an "Acceptance criteria" bullet list (2-3 bullets)`,
+    `Product: "${ctx.artifacts.featureTitle}"\nIdea: "${ctx.requirement}"${
+      ctx.artifacts.clarifications
+        ? `\n\nStakeholder clarifications (binding decisions):\n${ctx.artifacts.clarifications}`
+        : ""
+    }\n\nReturn JSON: {"stories": [...]} with 4-6 stories covering the v1 of this client-side app. Each story:\n- "title": imperative, max 10 words\n- "points": 1, 2, 3, 5 or 8\n- "markdown": "As a <role>, I want <capability> so that <benefit>." followed by an "Acceptance criteria" bullet list (2-3 bullets)`,
     z.object({
       stories: z.array(z.object({ title: z.string(), points: z.number(), markdown: z.string() })),
     }),
@@ -381,7 +581,11 @@ async function runArchitecture(ctx: StageContext): Promise<StageResult> {
   const { text, model } = await aiText(
     ctx.ai,
     `${SHARED_RULES}\nYou are a pragmatic software architect. Respond in clean markdown.`,
-    `Product: "${ctx.artifacts.featureTitle}"\nIdea: "${ctx.requirement}"\nStories:\n${storyList}\n\n${APP_CONSTRAINTS}\n\nProduce an architecture doc with sections: ## System Overview (short paragraph + indented text diagram of index.html → src/main.ts → src/app.ts), ## Logic Core Design (src/app.ts: exported types and functions as a code-free list), ## UI Design (index.html: the main screens/controls and interaction flow), ## State & Persistence (what lives in memory vs localStorage), ## Key Risks (3 risks with mitigations). Under ~450 words.`,
+    `Product: "${ctx.artifacts.featureTitle}"\nIdea: "${ctx.requirement}"\nStories:\n${storyList}${
+      ctx.artifacts.clarifications
+        ? `\nStakeholder clarifications (binding decisions):\n${ctx.artifacts.clarifications}`
+        : ""
+    }\n\n${APP_CONSTRAINTS}\n\nProduce an architecture doc with sections: ## System Overview (short paragraph + indented text diagram of index.html → src/main.ts → src/app.ts), ## Logic Core Design (src/app.ts: exported types and functions as a code-free list), ## UI Design (index.html: the main screens/controls and interaction flow), ## State & Persistence (what lives in memory vs localStorage), ## Key Risks (3 risks with mitigations). Under ~450 words.`,
     0.5
   );
 
@@ -419,7 +623,11 @@ async function runCode(ctx: StageContext): Promise<StageResult> {
   const { data, model } = await aiJson(
     ctx.ai,
     `${SHARED_RULES}\nYou are a senior engineer. Write production-quality, idiomatic TypeScript and clean semantic HTML.`,
-    `Build the v1 of "${ctx.artifacts.featureTitle}" — ${ctx.requirement}\n\n${APP_CONSTRAINTS}\n\nReturn JSON:\n- "note": 2-3 sentence markdown note on what you built\n- "files": exactly three entries with "path" and "content":\n  1. path "src/app.ts" — the logic core (~80-140 lines)\n  2. path "src/main.ts" — the DOM layer (~60-100 lines)\n  3. path "index.html" — the complete UI with inline styles (~80-140 lines), dark theme, responsive, and the module script tag\nThe app must be genuinely usable, not a stub.`,
+    `Build the v1 of "${ctx.artifacts.featureTitle}" — ${ctx.requirement}${
+      ctx.artifacts.clarifications
+        ? `\n\nStakeholder clarifications (binding decisions):\n${ctx.artifacts.clarifications}`
+        : ""
+    }\n\n${APP_CONSTRAINTS}\n\nReturn JSON:\n- "note": 2-3 sentence markdown note on what you built\n- "files": exactly three entries with "path" and "content":\n  1. path "src/app.ts" — the logic core (~80-140 lines)\n  2. path "src/main.ts" — the DOM layer (~60-100 lines)\n  3. path "index.html" — the complete UI with inline styles (~80-140 lines), dark theme, responsive, and the module script tag\nThe app must be genuinely usable, not a stub.`,
     z.object({ note: z.string(), files: z.array(FILE_SCHEMA) }),
     0.3
   );
@@ -649,7 +857,231 @@ async function runTests(ctx: StageContext): Promise<StageResult> {
   };
 }
 
+// Testing-phase gate: poll the PR's CI and, when it goes red, diagnose from
+// the actual failure logs and push bounded fix commits until green.
+async function runCiVerify(ctx: StageContext): Promise<StageResult> {
+  const slug = need(ctx.artifacts.slug, "slug");
+  const branch = need(ctx.artifacts.branch, "branch");
+  const prNumber = need(ctx.artifacts.prNumber, "prNumber");
+  const ref = repoRef(ctx);
+  const artifacts = { ...ctx.artifacts };
+
+  const prState = await getPullRequest(ctx.gh.token, ref, prNumber);
+  const headSha = prState.head.sha;
+  artifacts.headSha = headSha;
+  const checks = await getCheckRuns(ctx.gh.token, ref, headSha);
+  const checkLines = checks.runs
+    .map((r) => `- ${r.name}: ${r.status === "completed" ? (r.conclusion ?? "?") : r.status}`)
+    .join("\n");
+  const attempts = artifacts.ciFixAttempts ?? 0;
+
+  if (checks.total === 0 || checks.completed < checks.total) {
+    return {
+      output: `## Verifying CI\n\n${checkLines || "- CI has not started yet"}\n\n_Polling until every check on the PR head completes._`,
+      links: [{ label: "CI runs", url: `${artifacts.repoUrl}/actions` }],
+      artifacts,
+      pending: true,
+    };
+  }
+
+  if (checks.failed === 0) {
+    return {
+      output: `## CI Green ✅\n\n${checkLines}\n\n${
+        attempts > 0
+          ? `The build went red and was healed automatically — ${attempts} fix ${attempts === 1 ? "commit" : "commits"} pushed after reading the failure logs.`
+          : "All checks passed on the first run — no intervention needed."
+      }`,
+      links: [{ label: "CI runs", url: `${artifacts.repoUrl}/actions` }],
+      artifacts: { ...artifacts, ciGreen: true },
+    };
+  }
+
+  // Red build. Bounded self-heal: two attempts, then a human takes over.
+  if (attempts >= 2) {
+    throw new Error(
+      `CI is still red after ${attempts} automated fix attempts — a human needs to look at the PR. Checks:\n${checkLines}`
+    );
+  }
+
+  let logTail = "";
+  const run = await latestWorkflowRun(ctx.gh.token, ref, "ci.yml", branch);
+  if (run) {
+    const jobs = await listWorkflowJobs(ctx.gh.token, ref, run.id).catch(() => []);
+    const failedJob = jobs.find((j) => j.conclusion === "failure") ?? jobs[0];
+    if (failedJob) {
+      logTail = await getJobLog(ctx.gh.token, ref, failedJob.id).catch(() => "");
+    }
+  }
+
+  const [appTs, testTs, mainTs] = await Promise.all([
+    readFileContent(ctx.gh.token, ref, "src/app.ts", branch),
+    readFileContent(ctx.gh.token, ref, "src/app.test.ts", branch).catch(() => ""),
+    readFileContent(ctx.gh.token, ref, "src/main.ts", branch),
+  ]);
+
+  const { data, model } = await aiJson(
+    ctx.ai,
+    `${SHARED_RULES}\nYou are the engineer on call for a red CI build. Diagnose from the log, fix the root cause — the app if the app is wrong, the test if the test is wrong. Never delete or weaken tests to force green.`,
+    `CI failed on the pull request for "${artifacts.featureTitle}".\n\nFailing checks:\n${checkLines}\n\nLog tail from the failed job:\n\`\`\`\n${logTail.slice(-5_000) || "(logs unavailable — reason about the code directly)"}\n\`\`\`\n\nCurrent files:\n\n--- src/app.ts ---\n${appTs}\n\n--- src/app.test.ts ---\n${testTs}\n\n--- src/main.ts ---\n${mainTs}\n\n${APP_CONSTRAINTS}\n\nReturn JSON:\n- "diagnosis": 2-3 sentence markdown root-cause analysis citing the log\n- "files": ONLY the files you changed (src/app.ts, src/app.test.ts, src/main.ts, or index.html), each with "path" and the COMPLETE fixed "content"`,
+    z.object({ diagnosis: z.string(), files: z.array(FILE_SCHEMA) }),
+    0.3
+  );
+
+  const allowed = new Set(["src/app.ts", "src/app.test.ts", "src/main.ts", "index.html"]);
+  const changed = data.files.filter((f) => allowed.has(f.path));
+  if (changed.length === 0) {
+    throw new Error(`CI is red and the self-heal produced no fix. Diagnosis: ${data.diagnosis}`);
+  }
+
+  for (const f of changed) {
+    const commit = await commitFile(
+      ctx.gh.token,
+      ref,
+      branch,
+      f.path,
+      f.content,
+      `fix(${slug}): heal red CI, attempt ${attempts + 1} — ${f.path}`
+    );
+    artifacts.headSha = commit.sha;
+    if (f.path === "src/app.ts") artifacts.moduleSource = f.content;
+  }
+  artifacts.ciFixAttempts = attempts + 1;
+
+  return {
+    output: `## CI Red — Self-Heal Attempt ${attempts + 1}/2 🔧\n\n**Failing checks:**\n${checkLines}\n\n**Diagnosis:**\n${data.diagnosis}\n\n**Fixed:** ${changed.map((f) => `\`${f.path}\``).join(", ")}\n\n_Fix pushed — waiting for CI to re-run._`,
+    links: [
+      { label: "Fix commits", url: `${artifacts.repoUrl}/commits/${branch}` },
+      { label: "CI runs", url: `${artifacts.repoUrl}/actions` },
+    ],
+    model,
+    artifacts,
+    pending: true,
+  };
+}
+
+// UAT: the stakeholder tries the product before release. With Vercel connected
+// a real preview deployment is built from the PR branch; otherwise the PR diff
+// stands in. Rejection triggers one fix cycle, mirroring real-world UAT.
+async function runUat(ctx: StageContext): Promise<StageResult> {
+  const branch = need(ctx.artifacts.branch, "branch");
+  const prNumber = need(ctx.artifacts.prNumber, "prNumber");
+  const ref = repoRef(ctx);
+  const artifacts = { ...ctx.artifacts };
+
+  if (ctx.input?.approved) {
+    return {
+      output: `## UAT Passed ✅\n\nAccepted by **${ctx.gh.login}**${ctx.input.comment ? ` — "${ctx.input.comment}"` : ""}. The product meets acceptance criteria; on to release.`,
+      links: [],
+      artifacts: { ...artifacts, uatApproved: true },
+    };
+  }
+
+  if (ctx.input && !ctx.input.approved) {
+    // UAT rejection: one fix cycle against the stakeholder's feedback.
+    const slug = need(artifacts.slug, "slug");
+    const [appTs, mainTs, indexHtml] = await Promise.all([
+      readFileContent(ctx.gh.token, ref, "src/app.ts", branch),
+      readFileContent(ctx.gh.token, ref, "src/main.ts", branch),
+      readFileContent(ctx.gh.token, ref, "index.html", branch),
+    ]);
+    const { data, model } = await aiJson(
+      ctx.ai,
+      `${SHARED_RULES}\nYou are the senior engineer fixing a product that failed user acceptance testing. Address the stakeholder's feedback exactly.`,
+      `Product: "${artifacts.featureTitle}"\n\nUAT feedback from the stakeholder:\n"${ctx.input.comment ?? "No specifics — polish rough edges."}"\n\nCurrent files:\n\n--- src/app.ts ---\n${appTs}\n\n--- src/main.ts ---\n${mainTs}\n\n--- index.html ---\n${indexHtml}\n\n${APP_CONSTRAINTS}\n\nReturn JSON:\n- "note": 2-3 sentence markdown summary of what you changed to satisfy the feedback\n- "files": ONLY the files you changed, each with "path" (src/app.ts, src/main.ts, or index.html) and the COMPLETE revised "content"`,
+      z.object({ note: z.string(), files: z.array(FILE_SCHEMA) }),
+      0.3
+    );
+    const allowed = new Set(["src/app.ts", "src/main.ts", "index.html"]);
+    const changed = data.files.filter((f) => allowed.has(f.path));
+    if (changed.length === 0) throw new Error("UAT fix cycle produced no file changes");
+    for (const f of changed) {
+      const commit = await commitFile(
+        ctx.gh.token,
+        ref,
+        branch,
+        f.path,
+        f.content,
+        `fix(${slug}): address UAT feedback — ${f.path}`
+      );
+      artifacts.headSha = commit.sha;
+      if (f.path === "src/app.ts") artifacts.moduleSource = f.content;
+    }
+    return {
+      output: `## UAT Feedback Applied 🔁\n\nFeedback: "${ctx.input.comment}"\n\n${data.note}\n\n**Fixed:** ${changed.map((f) => `\`${f.path}\``).join(", ")}\n\n> One UAT fix cycle applied — accepted to proceed. The release gate re-verifies CI on the new commits.`,
+      links: [{ label: "UAT fix commits", url: `${artifacts.repoUrl}/commits/${branch}` }],
+      model,
+      artifacts: { ...artifacts, uatApproved: true },
+    };
+  }
+
+  // No input yet — stand up a preview (Vercel path), then present the gate.
+  let previewNote = "";
+  if (ctx.vercel && !artifacts.uatPreviewUrl) {
+    if (!artifacts.uatDeploymentId) {
+      try {
+        const paths = (await listRepoFiles(ctx.gh.token, ref, branch)).filter(
+          (p) => !p.startsWith(".github/") && !p.startsWith("docs/") && p !== "src/app.test.ts"
+        );
+        const files = [];
+        for (const p of paths) {
+          files.push({ file: p, data: await readFileContent(ctx.gh.token, ref, p, branch) });
+        }
+        const dep = await createVercelDeployment(
+          ctx.vercel,
+          need(artifacts.slug, "slug"),
+          files,
+          "preview"
+        );
+        artifacts.uatDeploymentId = dep.id;
+      } catch {
+        previewNote =
+          "\n\n_Preview deployment could not be created — review the PR diff instead._";
+      }
+    }
+    if (artifacts.uatDeploymentId) {
+      const dep = await getVercelDeployment(ctx.vercel, artifacts.uatDeploymentId).catch(() => null);
+      if (dep && dep.readyState === "READY") {
+        artifacts.uatPreviewUrl = `https://${dep.url}`;
+      } else if (dep && !["ERROR", "CANCELED"].includes(dep.readyState)) {
+        return {
+          output: `## Preparing UAT Preview\n\nA preview deployment of the PR branch is building on Vercel (${dep.readyState.toLowerCase()})…`,
+          links: artifacts.prUrl ? [{ label: `PR #${prNumber}`, url: artifacts.prUrl }] : [],
+          artifacts,
+          pending: true,
+        };
+      } else {
+        previewNote = "\n\n_The preview deployment failed — review the PR diff instead._";
+      }
+    }
+  }
+
+  const links: ArtifactLink[] = [];
+  if (artifacts.uatPreviewUrl)
+    links.push({ label: "🔍 UAT preview", url: artifacts.uatPreviewUrl });
+  if (artifacts.prUrl) links.push({ label: `PR #${prNumber}`, url: artifacts.prUrl });
+
+  return {
+    output: `## User Acceptance Testing\n\nThe product is built, reviewed, and CI-verified. Before release, acceptance is the stakeholder's call — that's you.\n\n${
+      artifacts.uatPreviewUrl
+        ? `**Try the live preview:** ${artifacts.uatPreviewUrl}`
+        : "No Vercel connection, so there's no pre-merge preview — review the PR to judge acceptance (the app goes live on GitHub Pages right after release)."
+    }${previewNote}`,
+    links,
+    artifacts,
+    gate: {
+      type: "approval",
+      title: "Does the product meet your acceptance criteria?",
+      description:
+        "Accept to proceed to release, or request changes with specific feedback (one fix cycle).",
+      allowChanges: true,
+    },
+  };
+}
+
 async function runRelease(ctx: StageContext): Promise<StageResult> {
+  if (!ctx.artifacts.releaseApproved) {
+    throw new Error("Release has not been approved — complete the Release Approval gate first");
+  }
   const prNumber = need(ctx.artifacts.prNumber, "prNumber");
   const ref = repoRef(ctx);
   let artifacts = { ...ctx.artifacts };
@@ -802,13 +1234,19 @@ async function runRelease(ctx: StageContext): Promise<StageResult> {
 /* --------------------------------- dispatch -------------------------------- */
 
 const HANDLERS: Record<StageId, (ctx: StageContext) => Promise<StageResult>> = {
+  plan: runPlan,
   requirements: runRequirements,
+  clarify: runClarify,
   stories: runStories,
   architecture: runArchitecture,
+  design_approval: runDesignApproval,
   code: runCode,
   review: runReview,
   rework: runRework,
   tests: runTests,
+  ci_verify: runCiVerify,
+  uat: runUat,
+  release_approval: runReleaseApproval,
   release: runRelease,
 };
 

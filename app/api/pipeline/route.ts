@@ -6,7 +6,7 @@ import {
   getJiraSession,
   getVercelSession,
 } from "@/lib/session";
-import { runStage, type Artifacts } from "@/lib/pipeline";
+import { runStage, type Artifacts, type GateInput } from "@/lib/pipeline";
 import { dbEnabled, saveStageResult } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -20,6 +20,7 @@ interface PipelineRequest {
   requirement: string;
   artifacts?: Artifacts;
   runId?: string;
+  input?: GateInput;
 }
 
 export async function POST(request: Request) {
@@ -66,22 +67,30 @@ export async function POST(request: Request) {
       ai,
       requirement,
       artifacts: body.artifacts ?? {},
+      input: body.input,
     });
 
     if (runId && dbEnabled()) {
-      const isRelease = body.stageId === "release";
+      const runStatus =
+        body.stageId === "plan" && result.artifacts.planVerdict === "NO-GO"
+          ? "rejected"
+          : result.gate
+            ? "awaiting_input"
+            : body.stageId === "release" && !result.pending
+              ? "released"
+              : "running";
       await saveStageResult(
         runId,
         gh.login,
         {
           stageId: body.stageId,
-          status: result.pending ? "waiting" : "done",
+          status: result.gate || result.pending ? "waiting" : "done",
           output: result.output,
           links: result.links,
           model: result.model,
         },
         result.artifacts,
-        isRelease && !result.pending ? "released" : "running"
+        runStatus
       ).catch(() => {});
     }
     return Response.json(result);

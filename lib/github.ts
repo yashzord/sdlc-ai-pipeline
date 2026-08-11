@@ -93,16 +93,71 @@ export async function latestWorkflowRun(
   ref: RepoRef,
   workflowFile: string,
   branch: string
-): Promise<{ status: string; conclusion: string | null; html_url: string } | null> {
+): Promise<{ id: number; status: string; conclusion: string | null; html_url: string } | null> {
   try {
     const data = await gh<{
-      workflow_runs: Array<{ status: string; conclusion: string | null; html_url: string }>;
+      workflow_runs: Array<{
+        id: number;
+        status: string;
+        conclusion: string | null;
+        html_url: string;
+      }>;
     }>(
       token,
       "GET",
       `/repos/${ref.owner}/${ref.repo}/actions/workflows/${workflowFile}/runs?branch=${encodeURIComponent(branch)}&per_page=1`
     );
     return data.workflow_runs[0] ?? null;
+  } catch (err) {
+    if (err instanceof GithubError && err.status === 404) return null;
+    throw err;
+  }
+}
+
+export async function listWorkflowJobs(token: string, ref: RepoRef, runId: number) {
+  const data = await gh<{
+    jobs: Array<{ id: number; name: string; status: string; conclusion: string | null }>;
+  }>(token, "GET", `/repos/${ref.owner}/${ref.repo}/actions/runs/${runId}/jobs?per_page=20`);
+  return data.jobs;
+}
+
+// Job logs come back as raw text (via a redirect), not JSON.
+export async function getJobLog(token: string, ref: RepoRef, jobId: number): Promise<string> {
+  const res = await fetch(`${API}/repos/${ref.owner}/${ref.repo}/actions/jobs/${jobId}/logs`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+    redirect: "follow",
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) {
+    throw new GithubError(`GitHub job logs → ${res.status}`, res.status);
+  }
+  return res.text();
+}
+
+export async function getIssue(token: string, ref: RepoRef, issueNumber: number) {
+  return gh<{
+    number: number;
+    title: string;
+    body: string | null;
+    html_url: string;
+    state: string;
+    labels: Array<{ name: string }>;
+  }>(token, "GET", `/repos/${ref.owner}/${ref.repo}/issues/${issueNumber}`);
+}
+
+// The latest published release tag, or null when nothing has shipped yet.
+export async function latestReleaseTag(token: string, ref: RepoRef): Promise<string | null> {
+  try {
+    const data = await gh<{ tag_name: string }>(
+      token,
+      "GET",
+      `/repos/${ref.owner}/${ref.repo}/releases/latest`
+    );
+    return data.tag_name;
   } catch (err) {
     if (err instanceof GithubError && err.status === 404) return null;
     throw err;
