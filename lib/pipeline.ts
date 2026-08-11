@@ -273,6 +273,7 @@ async function runRequirements(ctx: StageContext): Promise<StageResult> {
   await enablePages(ctx.gh.token, ref).catch(() => {});
 
   const scaffold: Array<[string, string]> = [
+    [".gitignore", "node_modules/\ndist/\n*.tsbuildinfo\n"],
     ["package.json", SCAFFOLD_PACKAGE(slug)],
     ["tsconfig.json", SCAFFOLD_TSCONFIG],
     ["vite.config.ts", SCAFFOLD_VITE],

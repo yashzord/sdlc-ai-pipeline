@@ -14,6 +14,7 @@ import {
   Copy,
   ChevronDown,
   Loader2,
+  RotateCcw,
   CircleDashed,
   AlertTriangle,
   ExternalLink,
@@ -152,6 +153,15 @@ export default function StageCard({
             </div>
             {stage.output && (
               <div className="flex shrink-0 items-center gap-1">
+                {onRetry && (stage.status === "done" || stage.status === "skipped") && (
+                  <button
+                    onClick={onRetry}
+                    className="rounded-md p-1.5 text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-300"
+                    title="Re-run the pipeline from this stage"
+                  >
+                    <RotateCcw className="h-4 w-4" />
+                  </button>
+                )}
                 <button
                   onClick={copy}
                   className="rounded-md p-1.5 text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-300"
