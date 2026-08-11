@@ -16,6 +16,21 @@ const SAMPLES = [
 const CI_POLL_MS = 15_000;
 const CI_MAX_POLLS = 24;
 
+// Mobile browsers drop in-flight requests when backgrounded ("Load failed") —
+// retry transient network errors before declaring the stage dead.
+async function fetchWithRetry(input: string, init: RequestInit): Promise<Response> {
+  let lastErr: unknown;
+  for (let i = 0; i < 3; i++) {
+    try {
+      return await fetch(input, init);
+    } catch (err) {
+      lastErr = err;
+      await new Promise((r) => setTimeout(r, 2_000 * (i + 1)));
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("Network request failed");
+}
+
 function initialStages(): StageState[] {
   return STAGES.map((s) => ({
     id: s.id,
@@ -59,7 +74,7 @@ export default function Home() {
       const started = performance.now();
       try {
         for (let attempt = 0; attempt <= CI_MAX_POLLS; attempt++) {
-          const res = await fetch("/api/pipeline", {
+          const res = await fetchWithRetry("/api/pipeline", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
