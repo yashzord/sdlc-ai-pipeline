@@ -189,7 +189,7 @@ export default function Home() {
   }, [refreshMe, reset]);
 
   const released = stages[stages.length - 1]?.status === "done";
-  const readyToRun = Boolean(me?.github && me?.ai);
+  const readyToRun = Boolean(me?.github && (me?.serverAi || me?.byokAi));
 
   return (
     <main className="mx-auto max-w-3xl px-4 py-10">
@@ -252,9 +252,10 @@ export default function Home() {
           >
             Sign in with GitHub
           </a>
-          {!me.ai && (
-            <p className="mt-4 text-xs text-rose-400">
-              Note: GEMINI_API_KEY is missing on the server — runs will fail until the owner adds it.
+          {!me.serverAi && (
+            <p className="mt-4 text-xs text-amber-400">
+              No built-in AI is configured on this deployment — after signing in you can connect
+              your own AI key (Gemini, Claude, Groq, or OpenRouter).
             </p>
           )}
         </div>

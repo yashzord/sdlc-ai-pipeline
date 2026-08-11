@@ -1,6 +1,7 @@
+import { z } from "zod";
 import type { StageId } from "./stages";
 import type { GithubSession, JiraSession, VercelSession } from "./session";
-import { generateJson, generateWithGemini } from "./gemini";
+import { aiJson, aiText, type AIConfig } from "./ai";
 import {
   GithubError,
   closeIssue,
@@ -67,9 +68,12 @@ export interface StageContext {
   gh: GithubSession;
   jira: JiraSession | null;
   vercel: VercelSession | null;
+  ai: AIConfig;
   requirement: string;
   artifacts: Artifacts;
 }
+
+const FILE_SCHEMA = z.object({ path: z.string(), content: z.string() });
 
 export interface StageResult {
   output: string;
@@ -224,13 +228,11 @@ Built and shipped end-to-end by the [SDLC AI Pipeline](https://sdlc-ai-pipeline.
 /* ---------------------------------- stages --------------------------------- */
 
 async function runRequirements(ctx: StageContext): Promise<StageResult> {
-  const { data, model } = await generateJson<{
-    title: string;
-    slug: string;
-    markdown: string;
-  }>(
+  const { data, model } = await aiJson(
+    ctx.ai,
     `${SHARED_RULES}\nYou are a senior business analyst.`,
     `Raw product idea:\n\n"${ctx.requirement}"\n\n${APP_CONSTRAINTS}\n\nReturn JSON with:\n- "title": short product title (max 6 words)\n- "slug": kebab-case repository name (max 4 words, no suffixes)\n- "markdown": a requirements document with sections: ## Functional Requirements (numbered FR-1..., 5-8 items with one-line rationale, all achievable in a client-side app), ## Non-Functional Requirements (NFR-1..., 4-5 items), ## Out of Scope (3 bullets), ## Open Questions (3 numbered questions)`,
+    z.object({ title: z.string(), slug: z.string(), markdown: z.string() }),
     0.5
   );
 
@@ -316,11 +318,13 @@ async function runRequirements(ctx: StageContext): Promise<StageResult> {
 
 async function runStories(ctx: StageContext): Promise<StageResult> {
   const epic = need(ctx.artifacts.epic, "epic");
-  const { data, model } = await generateJson<{
-    stories: Array<{ title: string; points: number; markdown: string }>;
-  }>(
+  const { data, model } = await aiJson(
+    ctx.ai,
     `${SHARED_RULES}\nYou are a product owner writing sprint-ready user stories.`,
     `Product: "${ctx.artifacts.featureTitle}"\nIdea: "${ctx.requirement}"\n\nReturn JSON: {"stories": [...]} with 4-6 stories covering the v1 of this client-side app. Each story:\n- "title": imperative, max 10 words\n- "points": 1, 2, 3, 5 or 8\n- "markdown": "As a <role>, I want <capability> so that <benefit>." followed by an "Acceptance criteria" bullet list (2-3 bullets)`,
+    z.object({
+      stories: z.array(z.object({ title: z.string(), points: z.number(), markdown: z.string() })),
+    }),
     0.5
   );
 
@@ -368,7 +372,8 @@ async function runStories(ctx: StageContext): Promise<StageResult> {
 async function runArchitecture(ctx: StageContext): Promise<StageResult> {
   const slug = need(ctx.artifacts.slug, "slug");
   const storyList = (ctx.artifacts.stories ?? []).map((s) => `- ${s.title}`).join("\n");
-  const { text, model } = await generateWithGemini(
+  const { text, model } = await aiText(
+    ctx.ai,
     `${SHARED_RULES}\nYou are a pragmatic software architect. Respond in clean markdown.`,
     `Product: "${ctx.artifacts.featureTitle}"\nIdea: "${ctx.requirement}"\nStories:\n${storyList}\n\n${APP_CONSTRAINTS}\n\nProduce an architecture doc with sections: ## System Overview (short paragraph + indented text diagram of index.html → src/main.ts → src/app.ts), ## Logic Core Design (src/app.ts: exported types and functions as a code-free list), ## UI Design (index.html: the main screens/controls and interaction flow), ## State & Persistence (what lives in memory vs localStorage), ## Key Risks (3 risks with mitigations). Under ~450 words.`,
     0.5
@@ -405,12 +410,11 @@ async function runArchitecture(ctx: StageContext): Promise<StageResult> {
 async function runCode(ctx: StageContext): Promise<StageResult> {
   const slug = need(ctx.artifacts.slug, "slug");
   const branch = need(ctx.artifacts.branch, "branch");
-  const { data, model } = await generateJson<{
-    note: string;
-    files: Array<{ path: string; content: string }>;
-  }>(
+  const { data, model } = await aiJson(
+    ctx.ai,
     `${SHARED_RULES}\nYou are a senior engineer. Write production-quality, idiomatic TypeScript and clean semantic HTML.`,
     `Build the v1 of "${ctx.artifacts.featureTitle}" — ${ctx.requirement}\n\n${APP_CONSTRAINTS}\n\nReturn JSON:\n- "note": 2-3 sentence markdown note on what you built\n- "files": exactly three entries with "path" and "content":\n  1. path "src/app.ts" — the logic core (~80-140 lines)\n  2. path "src/main.ts" — the DOM layer (~60-100 lines)\n  3. path "index.html" — the complete UI with inline styles (~80-140 lines), dark theme, responsive, and the module script tag\nThe app must be genuinely usable, not a stub.`,
+    z.object({ note: z.string(), files: z.array(FILE_SCHEMA) }),
     0.3
   );
 
@@ -489,7 +493,8 @@ async function runReview(ctx: StageContext): Promise<StageResult> {
     .join("\n\n")
     .slice(0, 16_000);
 
-  const { text, model } = await generateWithGemini(
+  const { text, model } = await aiText(
+    ctx.ai,
     `${SHARED_RULES}\nYou are a rigorous staff engineer doing code review. Be direct; praise nothing that isn't earned. Respond in clean markdown.`,
     `Review this real pull request diff for "${ctx.artifacts.featureTitle}" (a client-side web app: index.html + src/main.ts + src/app.ts).\n\n${diff}\n\nProduce:\n## Verdict\nOne of exactly: APPROVE, APPROVE WITH COMMENTS, REQUEST CHANGES — plus a one-line justification.\n## Findings\nNumbered, each tagged [bug]/[risk]/[style]/[perf]/[a11y] with severity (high/med/low) and a concrete fix.\n## Test Focus\n3 areas the test stage must cover in src/app.ts.`,
     0.3
@@ -530,13 +535,11 @@ async function runRework(ctx: StageContext): Promise<StageResult> {
     readFileContent(ctx.gh.token, ref, "index.html", branch),
   ]);
 
-  const { data, model } = await generateJson<{
-    note: string;
-    addressed: string[];
-    files: Array<{ path: string; content: string }>;
-  }>(
+  const { data, model } = await aiJson(
+    ctx.ai,
     `${SHARED_RULES}\nYou are the senior engineer whose pull request received a REQUEST CHANGES review. Fix every finding properly — no shortcuts.`,
     `The review:\n${reviewNotes}\n\nCurrent files:\n\n--- src/app.ts ---\n${appTs}\n\n--- src/main.ts ---\n${mainTs}\n\n--- index.html ---\n${indexHtml}\n\n${APP_CONSTRAINTS}\n\nReturn JSON:\n- "note": 2-3 sentence markdown summary of the rework\n- "addressed": array of one-line strings, one per finding fixed\n- "files": ONLY the files you changed, each with "path" (src/app.ts, src/main.ts, or index.html) and the COMPLETE revised "content"`,
+    z.object({ note: z.string(), addressed: z.array(z.string()), files: z.array(FILE_SCHEMA) }),
     0.3
   );
 
@@ -559,7 +562,8 @@ async function runRework(ctx: StageContext): Promise<StageResult> {
     if (f.path === "src/app.ts") newModuleSource = f.content;
   }
 
-  const { text: reReview } = await generateWithGemini(
+  const { text: reReview } = await aiText(
+    ctx.ai,
     `${SHARED_RULES}\nYou are the same staff engineer re-reviewing after the author addressed your findings. Respond in clean markdown.`,
     `Your original review:\n${reviewNotes}\n\nThe revised files:\n${changed
       .map((f) => `--- ${f.path} ---\n${f.content}`)
@@ -610,9 +614,11 @@ async function runTests(ctx: StageContext): Promise<StageResult> {
   const branch = need(ctx.artifacts.branch, "branch");
   const moduleSource = need(ctx.artifacts.moduleSource, "moduleSource");
 
-  const { data, model } = await generateJson<{ note: string; source: string }>(
+  const { data, model } = await aiJson(
+    ctx.ai,
     `${SHARED_RULES}\nYou are a QA automation engineer. Write Vitest tests that would actually fail on real bugs.`,
     `Module under test — src/app.ts (import it as "./app"):\n\n\`\`\`typescript\n${moduleSource}\n\`\`\`\n\nReview findings to cover:\n${ctx.artifacts.reviewNotes ?? ""}\n\nReturn JSON:\n- "note": 2 sentence markdown test strategy\n- "source": complete Vitest test file (import { describe, it, expect } from "vitest"; import from "./app"). 6-10 focused test cases covering happy path, edge cases, and error handling. The tests MUST only use exports that actually exist in the module source above. Pure logic tests only — no DOM.`,
+    z.object({ note: z.string(), source: z.string() }),
     0.3
   );
 
@@ -668,7 +674,8 @@ async function runRelease(ctx: StageContext): Promise<StageResult> {
       const storyLines = (artifacts.stories ?? [])
         .map((s) => `- ${s.jiraKey ?? `#${s.issueNumber}`}: ${s.title}`)
         .join("\n");
-      const { text } = await generateWithGemini(
+      const { text } = await aiText(
+        ctx.ai,
         `${SHARED_RULES}\nYou are a release manager. State ONLY facts provided to you — never invent flags, environments, or processes.`,
         `Write release notes for v1.0 of "${artifacts.featureTitle}" (idea: "${ctx.requirement}").\nShipped stories:\n${storyLines}\nFinal review verdict: ${artifacts.reviewVerdict}${artifacts.reworked ? " (after one rework iteration)" : ""}.\nCI: all checks passed.\n\nSections: ## Highlights (user-facing bullets tied to the stories), ## Known Limitations (2-3 honest bullets), ## Quality Gates (one line each: AI review verdict, rework if any, CI result).`,
         0.4

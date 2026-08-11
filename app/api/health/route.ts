@@ -1,11 +1,11 @@
-import { hasLiveKey } from "@/lib/gemini";
+import { hasServerKey } from "@/lib/ai";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   return Response.json({
     status: "ok",
-    ai: hasLiveKey() ? "live" : "unconfigured",
+    ai: hasServerKey() ? "live" : "byok-only",
     oauth: Boolean(process.env.GITHUB_CLIENT_ID && process.env.SESSION_SECRET)
       ? "configured"
       : "unconfigured",

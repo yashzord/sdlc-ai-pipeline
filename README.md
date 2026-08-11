@@ -27,6 +27,7 @@ If CI fails, the release blocks. Failed stages offer "retry from here" (idempote
 ## Integrations (all per-user, no server config)
 
 - **GitHub** (required): OAuth sign-in with `repo workflow` scopes. Tokens sealed with AES-256-GCM into httpOnly cookies — no database.
+- **AI — bring your own key** (optional): the app ships with a shared Gemini default, but any user can connect their own key from **Gemini, Anthropic Claude, Groq, or OpenRouter** (validated with a 1-token call) for their own quota and model choice. Built on the [Vercel AI SDK](https://ai-sdk.dev) — one `generateText`/`generateObject` interface across all providers, with Zod-validated structured output.
 - **Jira** (optional): site + email + API token + project key; epics/stories become Jira issues and get transitioned through the flow. Without it, GitHub Issues are used.
 - **Vercel** (optional): paste an [access token](https://vercel.com/account/settings/tokens); every release additionally deploys to your Vercel account. GitHub Pages remains the zero-config default.
 
@@ -65,6 +66,7 @@ npm run dev
 
 - `GET /api/auth/login|callback`, `POST /api/auth/logout` — GitHub OAuth
 - `GET /api/me` — connection status
+- `POST|DELETE /api/ai` — BYOK AI provider (gemini / anthropic / groq / openrouter)
 - `POST|DELETE /api/jira`, `POST|DELETE /api/vercel` — optional integrations
 - `POST /api/pipeline` — execute one stage `{ stageId, requirement, artifacts }` → `{ output, links, artifacts, model, pending? }`
 - `GET /api/health` — server config probe
@@ -82,9 +84,9 @@ components/
 lib/
   pipeline.ts             # the 8 stage orchestrations (AI + real side effects)
   stages.ts               # stage metadata
+  ai.ts                   # provider-agnostic AI layer (Vercel AI SDK: Gemini/Claude/Groq/OpenRouter, Zod schemas)
   github.ts               # GitHub REST client (repos, PRs, reviews, checks, Pages, releases)
   jira.ts                 # Jira REST client + markdown→ADF
   vercel.ts               # Vercel deployments client
-  gemini.ts               # Gemini client: retry, model fallback, strict JSON mode
   crypto.ts / session.ts  # AES-GCM sealed cookie sessions
 ```

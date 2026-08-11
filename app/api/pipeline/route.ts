@@ -1,6 +1,11 @@
 import { STAGES, type StageId } from "@/lib/stages";
-import { hasLiveKey } from "@/lib/gemini";
-import { getGithubSession, getJiraSession, getVercelSession } from "@/lib/session";
+import { serverDefault } from "@/lib/ai";
+import {
+  getAISession,
+  getGithubSession,
+  getJiraSession,
+  getVercelSession,
+} from "@/lib/session";
 import { runStage, type Artifacts } from "@/lib/pipeline";
 
 export const dynamic = "force-dynamic";
@@ -20,9 +25,10 @@ export async function POST(request: Request) {
   if (!gh) {
     return Response.json({ error: "Not signed in with GitHub" }, { status: 401 });
   }
-  if (!hasLiveKey()) {
+  const ai = (await getAISession()) ?? serverDefault();
+  if (!ai) {
     return Response.json(
-      { error: "GEMINI_API_KEY is not configured on the server — the pipeline cannot run" },
+      { error: "No AI provider available — connect your own key in the setup panel" },
       { status: 503 }
     );
   }
@@ -51,6 +57,7 @@ export async function POST(request: Request) {
       gh,
       jira,
       vercel,
+      ai,
       requirement,
       artifacts: body.artifacts ?? {},
     });

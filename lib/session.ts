@@ -19,9 +19,16 @@ export interface VercelSession {
   teamId?: string;
 }
 
+export interface AISession {
+  provider: "gemini" | "anthropic" | "groq" | "openrouter";
+  apiKey: string;
+  model?: string;
+}
+
 const GH_COOKIE = "sdlc_gh";
 const JIRA_COOKIE = "sdlc_jira";
 const VERCEL_COOKIE = "sdlc_vercel";
+const AI_COOKIE = "sdlc_ai";
 
 const COOKIE_OPTS = {
   httpOnly: true,
@@ -64,8 +71,19 @@ export async function setVercelSession(session: VercelSession): Promise<void> {
   jar.set(VERCEL_COOKIE, await seal(session), COOKIE_OPTS);
 }
 
-export async function clearSession(names: ("gh" | "jira" | "vercel")[]): Promise<void> {
+export async function getAISession(): Promise<AISession | null> {
   const jar = await cookies();
-  const map = { gh: GH_COOKIE, jira: JIRA_COOKIE, vercel: VERCEL_COOKIE };
+  const raw = jar.get(AI_COOKIE)?.value;
+  return raw ? unseal<AISession>(raw) : null;
+}
+
+export async function setAISession(session: AISession): Promise<void> {
+  const jar = await cookies();
+  jar.set(AI_COOKIE, await seal(session), COOKIE_OPTS);
+}
+
+export async function clearSession(names: ("gh" | "jira" | "vercel" | "ai")[]): Promise<void> {
+  const jar = await cookies();
+  const map = { gh: GH_COOKIE, jira: JIRA_COOKIE, vercel: VERCEL_COOKIE, ai: AI_COOKIE };
   for (const name of names) jar.delete(map[name]);
 }

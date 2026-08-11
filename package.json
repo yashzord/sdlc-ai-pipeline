@@ -9,10 +9,16 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.37",
+    "@ai-sdk/google": "^4.0.41",
+    "@ai-sdk/groq": "^4.0.27",
+    "@openrouter/ai-sdk-provider": "^3.0.0",
+    "ai": "^7.0.59",
     "lucide-react": "^1.8.0",
     "next": "16.2.4",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
