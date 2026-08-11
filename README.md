@@ -28,7 +28,6 @@ Each stage is a separate AI call with its own role, prompt, and the accumulated 
 
 - **Next.js (App Router)** — UI and API in one deployable
 - **Google Gemini** — free-tier LLM powering every stage (REST API, no SDK)
-- **Demo mode** — with no API key configured, the pipeline serves realistic pre-scripted outputs so the deployed app always works
 - **GitHub Actions** — CI (typecheck + build) on every push and PR
 - **Vercel** — hosting and deploys
 
@@ -36,22 +35,23 @@ Each stage is a separate AI call with its own role, prompt, and the accumulated 
 
 ```bash
 npm install
-cp .env.example .env   # optional: add your key
+cp .env.example .env   # add your key — required
 npm run dev
 ```
 
-### Going live (free)
+### API key (free, required)
 
 1. Create a free API key at [Google AI Studio](https://aistudio.google.com/apikey) — no credit card required.
 2. Set `GEMINI_API_KEY` in `.env` locally, or in **Vercel → Project → Settings → Environment Variables** for the deployed app, then redeploy.
-3. The header badge flips from **AI: demo mode** to **AI: live**.
+
+Without a key the header badge shows **AI: no key** and pipeline runs return an error (503) — there is no canned fallback output.
 
 Optional: set `GEMINI_MODEL` to pin a model (defaults to `gemini-2.5-flash`, falling back to `gemini-2.0-flash` and `gemini-flash-latest`).
 
 ## API
 
-- `POST /api/pipeline` — run one stage. Body: `{ stageId, requirement, context }` → `{ output, mode, model? }`
-- `GET /api/health` — `{ status, mode }` where mode is `live` or `demo`
+- `POST /api/pipeline` — run one stage. Body: `{ stageId, requirement, context }` → `{ output, model }`; errors: 503 when no key is configured, 502 when generation fails
+- `GET /api/health` — `{ status, mode }` where mode is `live` or `unconfigured`
 
 ## CI/CD
 
@@ -64,13 +64,12 @@ Optional: set `GEMINI_MODEL` to pin a model (defaults to `gemini-2.5-flash`, fal
 app/
   page.tsx              # pipeline dashboard (client)
   layout.tsx            # root layout + metadata
-  api/pipeline/route.ts # stage executor (Gemini or demo)
-  api/health/route.ts   # mode probe
+  api/pipeline/route.ts # stage executor (Gemini)
+  api/health/route.ts   # key-configured probe
 components/
   StageCard.tsx         # timeline stage UI
   Markdown.tsx          # safe markdown renderer (no innerHTML)
 lib/
   stages.ts             # the 7 stage definitions + prompts
   gemini.ts             # Gemini REST client with model fallback
-  demo.ts               # pre-scripted demo outputs
 ```

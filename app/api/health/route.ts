@@ -5,6 +5,6 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   return Response.json({
     status: "ok",
-    mode: hasLiveKey() ? "live" : "demo",
+    mode: hasLiveKey() ? "live" : "unconfigured",
   });
 }

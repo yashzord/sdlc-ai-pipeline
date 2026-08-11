@@ -1,6 +1,5 @@
 import { STAGE_MAP, type StageId } from "@/lib/stages";
 import { generateWithGemini, hasLiveKey } from "@/lib/gemini";
-import { demoOutput } from "@/lib/demo";
 
 export const maxDuration = 60;
 
@@ -36,29 +35,28 @@ export async function POST(request: Request) {
     );
   }
 
+  if (!hasLiveKey()) {
+    return Response.json(
+      { error: "GEMINI_API_KEY is not configured on the server — the pipeline cannot run" },
+      { status: 503 }
+    );
+  }
+
   const context = (typeof body.context === "string" ? body.context : "").slice(
     -MAX_CONTEXT_CHARS
   );
 
-  if (hasLiveKey()) {
-    try {
-      const { text, model } = await generateWithGemini(
-        stage.system,
-        stage.buildPrompt(requirement, context)
-      );
-      return Response.json({ output: text, mode: "live", model });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return Response.json({
-        output: demoOutput(stage.id, requirement),
-        mode: "demo",
-        note: `Live call failed, served demo output instead: ${message.slice(0, 200)}`,
-      });
-    }
+  try {
+    const { text, model } = await generateWithGemini(
+      stage.system,
+      stage.buildPrompt(requirement, context)
+    );
+    return Response.json({ output: text, model });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return Response.json(
+      { error: `AI generation failed: ${message.slice(0, 300)}` },
+      { status: 502 }
+    );
   }
-
-  return Response.json({
-    output: demoOutput(stage.id, requirement),
-    mode: "demo",
-  });
 }

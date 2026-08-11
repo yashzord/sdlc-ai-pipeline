@@ -29,7 +29,7 @@ export default function Home() {
   const [requirement, setRequirement] = useState("");
   const [stages, setStages] = useState<StageState[]>(initialStages);
   const [running, setRunning] = useState(false);
-  const [serverMode, setServerMode] = useState<"live" | "demo" | null>(null);
+  const [serverMode, setServerMode] = useState<"live" | "unconfigured" | null>(null);
   const cancelRef = useRef(false);
 
   useEffect(() => {
@@ -79,9 +79,7 @@ export default function Home() {
         patchStage(stage.id, {
           status: "done",
           output: data.output,
-          mode: data.mode,
           model: data.model,
-          note: data.note,
           durationMs: performance.now() - started,
         });
       } catch (err) {
@@ -150,15 +148,15 @@ export default function Home() {
                 className={`rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide ${
                   serverMode === "live"
                     ? "bg-emerald-500/15 text-emerald-400"
-                    : "bg-amber-500/15 text-amber-400"
+                    : "bg-rose-500/15 text-rose-400"
                 }`}
                 title={
                   serverMode === "live"
                     ? "Connected to the Gemini API"
-                    : "No GEMINI_API_KEY configured — outputs are pre-scripted"
+                    : "No GEMINI_API_KEY configured — pipeline runs will fail"
                 }
               >
-                {serverMode === "live" ? "AI: live" : "AI: demo mode"}
+                {serverMode === "live" ? "AI: live" : "AI: no key"}
               </span>
             )}
             <a

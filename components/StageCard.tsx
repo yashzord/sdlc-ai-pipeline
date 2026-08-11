@@ -38,7 +38,6 @@ export interface StageState {
   description: string;
   status: StageStatus;
   output: string;
-  mode?: "live" | "demo";
   model?: string;
   note?: string;
   durationMs?: number;
@@ -122,15 +121,9 @@ export default function StageCard({
                 <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-400">
                   {stage.role}
                 </span>
-                {stage.mode && (
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
-                      stage.mode === "live"
-                        ? "bg-emerald-500/15 text-emerald-400"
-                        : "bg-amber-500/15 text-amber-400"
-                    }`}
-                  >
-                    {stage.mode === "live" ? `live · ${stage.model}` : "demo"}
+                {stage.model && (
+                  <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-emerald-400">
+                    live · {stage.model}
                   </span>
                 )}
                 {stage.durationMs !== undefined && (
