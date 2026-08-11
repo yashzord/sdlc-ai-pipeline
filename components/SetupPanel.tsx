@@ -171,22 +171,20 @@ export default function SetupPanel({
               placeholder="https://your-team.atlassian.net"
               className={inputCls}
             />
-            <div className="flex gap-2">
-              <input
-                value={jiraForm.email}
-                onChange={(e) => setJiraForm({ ...jiraForm, email: e.target.value })}
-                placeholder="you@email.com"
-                className={inputCls}
-              />
-              <input
-                value={jiraForm.projectKey}
-                onChange={(e) =>
-                  setJiraForm({ ...jiraForm, projectKey: e.target.value.toUpperCase() })
-                }
-                placeholder="KEY"
-                className={`${inputCls} w-24 shrink-0`}
-              />
-            </div>
+            <input
+              value={jiraForm.email}
+              onChange={(e) => setJiraForm({ ...jiraForm, email: e.target.value })}
+              placeholder="you@email.com"
+              className={inputCls}
+            />
+            <input
+              value={jiraForm.projectKey}
+              onChange={(e) =>
+                setJiraForm({ ...jiraForm, projectKey: e.target.value.toUpperCase() })
+              }
+              placeholder="Project key (e.g. SDLC)"
+              className={inputCls}
+            />
             <input
               value={jiraForm.apiToken}
               onChange={(e) => setJiraForm({ ...jiraForm, apiToken: e.target.value })}

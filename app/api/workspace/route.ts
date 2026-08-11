@@ -110,8 +110,11 @@ export async function POST(request: Request) {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      const hint = path.startsWith(".github/workflows")
+        ? " — committing workflow files needs the `workflow` OAuth scope; sign out and sign back in to re-authorize, then click Set up again."
+        : "";
       return Response.json(
-        { error: `Bootstrap failed at ${path}: ${message}` },
+        { error: `Bootstrap failed at ${path}: ${message}${hint}` },
         { status: 502 }
       );
     }

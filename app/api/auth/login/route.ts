@@ -25,7 +25,8 @@ export async function GET(request: Request) {
   const authorize = new URL("https://github.com/login/oauth/authorize");
   authorize.searchParams.set("client_id", clientId);
   authorize.searchParams.set("redirect_uri", `${origin}/api/auth/callback`);
-  authorize.searchParams.set("scope", "repo");
+  // `workflow` is required on top of `repo` to commit .github/workflows files
+  authorize.searchParams.set("scope", "repo workflow");
   authorize.searchParams.set("state", state);
 
   return Response.redirect(authorize.toString(), 302);
