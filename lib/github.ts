@@ -148,6 +148,13 @@ export async function createIssue(
   );
 }
 
+export async function closeIssue(token: string, ref: RepoRef, issueNumber: number) {
+  return gh(token, "PATCH", `/repos/${ref.owner}/${ref.repo}/issues/${issueNumber}`, {
+    state: "closed",
+    state_reason: "completed",
+  });
+}
+
 export async function createPullRequest(
   token: string,
   ref: RepoRef,

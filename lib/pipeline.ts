@@ -3,6 +3,7 @@ import type { GithubSession, JiraSession } from "./session";
 import { generateJson, generateWithGemini } from "./gemini";
 import {
   GithubError,
+  closeIssue,
   commitFile,
   createBranch,
   createIssue,
@@ -427,6 +428,10 @@ async function runRelease(ctx: StageContext): Promise<StageResult> {
     if (ctx.artifacts.epic?.jiraKey) {
       await transitionJiraIssue(ctx.jira, ctx.artifacts.epic.jiraKey, ["done", "complete"]);
     }
+  } else if (ctx.artifacts.epic?.issueNumber) {
+    // GitHub-issues fallback: stories close via the PR's "Closes #n" links,
+    // but the epic issue must be closed explicitly.
+    await closeIssue(ctx.gh.token, ref, ctx.artifacts.epic.issueNumber).catch(() => {});
   }
 
   return {
