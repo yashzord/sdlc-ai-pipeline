@@ -4,8 +4,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { History, LogOut, Play, RotateCcw, StepForward, Workflow } from "lucide-react";
 import StageCard, { type StageState } from "@/components/StageCard";
 import SetupPanel, { type MeState } from "@/components/SetupPanel";
-import { STAGES, type StageId } from "@/lib/stages";
-import type { Artifacts } from "@/lib/pipeline";
+import MaintenancePanel from "@/components/MaintenancePanel";
+import { PHASES, STAGES, type StageId } from "@/lib/stages";
+import type { Artifacts, GateInput } from "@/lib/pipeline";
 
 const SAMPLES = [
   "A pomodoro timer with task tracking and daily focus stats",
@@ -63,6 +64,7 @@ export default function Home() {
   const runIdRef = useRef<string | null>(null);
   const [runs, setRuns] = useState<RunSummary[] | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [noGo, setNoGo] = useState(false);
 
   const loadRuns = useCallback(() => {
     fetch("/api/runs")
@@ -92,8 +94,12 @@ export default function Home() {
   }, []);
 
   const executeStage = useCallback(
-    async (stage: (typeof STAGES)[number], req: string): Promise<boolean> => {
-      patchStage(stage.id, { status: "running", note: undefined });
+    async (
+      stage: (typeof STAGES)[number],
+      req: string,
+      gateInput?: GateInput
+    ): Promise<"done" | "gate" | "stop"> => {
+      patchStage(stage.id, { status: "running", note: undefined, gate: undefined });
       const started = performance.now();
       try {
         for (let attempt = 0; attempt <= CI_MAX_POLLS; attempt++) {
@@ -105,6 +111,7 @@ export default function Home() {
               requirement: req,
               artifacts: artifactsRef.current,
               runId: runIdRef.current ?? undefined,
+              input: gateInput,
             }),
           });
           const data = await res.json().catch(() => ({}));
@@ -117,7 +124,7 @@ export default function Home() {
                 status: "waiting",
                 note: "AI rate limit hit — waiting 30s and retrying automatically…",
               });
-              if (cancelRef.current) return false;
+              if (cancelRef.current) return "stop";
               await new Promise((r) => setTimeout(r, 30_000));
               continue;
             }
@@ -126,13 +133,24 @@ export default function Home() {
 
           artifactsRef.current = data.artifacts ?? artifactsRef.current;
 
+          // Human gate: the pipeline pauses here until the stakeholder responds.
+          if (data.gate) {
+            patchStage(stage.id, {
+              status: "waiting",
+              output: data.output,
+              links: data.links ?? [],
+              gate: data.gate,
+            });
+            return "gate";
+          }
+
           if (data.pending) {
             patchStage(stage.id, {
               status: "waiting",
               output: data.output,
               links: data.links ?? [],
             });
-            if (cancelRef.current) return false;
+            if (cancelRef.current) return "stop";
             await new Promise((r) => setTimeout(r, CI_POLL_MS));
             continue;
           }
@@ -143,9 +161,10 @@ export default function Home() {
             links: data.links ?? [],
             model: data.model,
             note: undefined,
+            gate: undefined,
             durationMs: performance.now() - started,
           });
-          return true;
+          return "done";
         }
         throw new Error("Timed out waiting for CI to complete");
       } catch (err) {
@@ -154,18 +173,19 @@ export default function Home() {
           note: err instanceof Error ? err.message : "Stage failed",
           durationMs: performance.now() - started,
         });
-        return false;
+        return "stop";
       }
     },
     [patchStage]
   );
 
   const runFrom = useCallback(
-    async (fromIndex: number) => {
+    async (fromIndex: number, gateInput?: GateInput) => {
       const req = requirement.trim();
       if (!req || running) return;
       cancelRef.current = false;
       setRunning(true);
+      setNoGo(false);
       if (fromIndex === 0) {
         artifactsRef.current = {};
         setStages(initialStages());
@@ -184,14 +204,16 @@ export default function Home() {
       } else {
         setStages((prev) =>
           prev.map((s, i) =>
-            i >= fromIndex ? { ...s, status: "pending", output: "", links: [], note: undefined } : s
+            i >= fromIndex
+              ? { ...s, status: "pending", output: "", links: [], note: undefined, gate: undefined }
+              : s
           )
         );
       }
 
       for (let i = fromIndex; i < STAGES.length; i++) {
         if (cancelRef.current) break;
-        // The rework stage is a conditional gate: it only runs when the
+        // The rework stage is a conditional step: it only runs when the
         // review demanded changes.
         if (
           STAGES[i].id === "rework" &&
@@ -203,13 +225,27 @@ export default function Home() {
           });
           continue;
         }
-        const ok = await executeStage(STAGES[i], req);
-        if (!ok) break;
+        // The gate input belongs only to the stage that asked for it.
+        const result = await executeStage(STAGES[i], req, i === fromIndex ? gateInput : undefined);
+        if (result !== "done") break;
+        // A NO-GO verdict from planning ends the run — a real SDLC stops
+        // before building something infeasible.
+        if (STAGES[i].id === "plan" && artifactsRef.current.planVerdict === "NO-GO") {
+          setNoGo(true);
+          break;
+        }
       }
       setRunning(false);
       loadRuns();
     },
-    [requirement, running, executeStage, loadRuns]
+    [requirement, running, executeStage, loadRuns, patchStage]
+  );
+
+  const submitGate = useCallback(
+    (index: number, input: GateInput) => {
+      void runFrom(index, input);
+    },
+    [runFrom]
   );
 
   const resumeRun = useCallback(async (id: string) => {
@@ -220,6 +256,7 @@ export default function Home() {
       cancelRef.current = true;
       runIdRef.current = run.id;
       artifactsRef.current = run.artifacts ?? {};
+      setNoGo(run.status === "rejected");
       setRequirement(run.requirement);
       setStages(
         STAGES.map((meta) => {
@@ -258,6 +295,7 @@ export default function Home() {
     runIdRef.current = null;
     setStages(initialStages());
     setRunning(false);
+    setNoGo(false);
   }, []);
 
   const signOut = useCallback(async () => {
@@ -285,7 +323,8 @@ export default function Home() {
             <div>
               <h1 className="text-lg font-bold text-slate-100">SDLC AI Pipeline</h1>
               <p className="text-xs text-slate-500">
-                Type an idea — AI agents ship it as a live app through real tickets, PRs, and CI
+                Type an idea — AI agents run all 7 SDLC phases and ship it live, with you at every
+                decision gate
               </p>
             </div>
           </div>
@@ -464,23 +503,62 @@ export default function Home() {
             </section>
           )}
 
-          {/* Pipeline */}
+          {/* Pipeline — stages grouped under the 7 canonical SDLC phases */}
           <section>
-            {stages.map((stage, i) => (
-              <StageCard
-                key={stage.id}
-                stage={stage}
-                index={i}
-                isLast={i === stages.length - 1}
-                onRetry={!running ? () => runFrom(i) : undefined}
-              />
-            ))}
+            {stages.map((stage, i) => {
+              const phase = STAGES[i].phase;
+              const isPhaseStart = i === 0 || STAGES[i - 1].phase !== phase;
+              return (
+                <div key={stage.id}>
+                  {isPhaseStart && (
+                    <div className="mb-3 flex items-center gap-2 pl-14">
+                      <span className="text-[10px] font-semibold uppercase tracking-widest text-slate-600">
+                        Phase {PHASES.indexOf(phase) + 1}
+                      </span>
+                      <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                        {phase}
+                      </span>
+                      <span className="h-px flex-1 bg-slate-800" />
+                    </div>
+                  )}
+                  <StageCard
+                    stage={stage}
+                    index={i}
+                    isLast={i === stages.length - 1}
+                    onRetry={!running ? () => runFrom(i) : undefined}
+                    onGateSubmit={(input) => submitGate(i, input)}
+                    gateDisabled={running}
+                  />
+                </div>
+              );
+            })}
+
+            {/* Phase 7 — Maintenance: an ongoing cycle, not a stage that "completes" */}
+            <div className="mb-3 flex items-center gap-2 pl-14">
+              <span className="text-[10px] font-semibold uppercase tracking-widest text-slate-600">
+                Phase 7
+              </span>
+              <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                Maintenance
+              </span>
+              <span className="h-px flex-1 bg-slate-800" />
+            </div>
+            <div className="pl-14">
+              <MaintenancePanel repo={artifactsRef.current.repo} released={released} />
+            </div>
           </section>
 
+          {noGo && (
+            <div className="mt-8 rounded-xl border border-rose-500/30 bg-rose-500/5 p-4 text-center text-sm text-rose-300">
+              Planning returned a NO-GO — the feasibility study rejected this idea, so the
+              lifecycle stops before anything is built. Refine the idea and run again.
+            </div>
+          )}
+
           {released && (
-            <div className="mb-8 rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 text-center text-sm text-emerald-300">
-              Feature shipped — PR merged, release published, tickets closed. That's the whole
-              lifecycle.
+            <div className="mt-8 rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 text-center text-sm text-emerald-300">
+              Product shipped — planned, specified, designed, built, reviewed, tested, approved,
+              and deployed. Maintenance is now open above; that's the whole lifecycle.
             </div>
           )}
         </>
