@@ -37,11 +37,13 @@ export async function validateVercel(session: VercelSession): Promise<{ username
 export async function createVercelDeployment(
   session: VercelSession,
   name: string,
-  files: Array<{ file: string; data: string }>
+  files: Array<{ file: string; data: string }>,
+  target: "production" | "preview" = "production"
 ): Promise<{ id: string; url: string }> {
   const data = await vercel<{ id: string; url: string }>(session, "POST", "/v13/deployments", {
     name,
-    target: "production",
+    // Omitting target yields a preview deployment.
+    ...(target === "production" ? { target: "production" } : {}),
     files,
     projectSettings: { framework: "vite" },
   });

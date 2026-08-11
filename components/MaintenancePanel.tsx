@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { Bug, ExternalLink, Loader2, Sparkles, Wrench } from "lucide-react";
+import { useRef, useState } from "react";
+import { Bug, ExternalLink, Loader2, Rocket, Sparkles, Wrench } from "lucide-react";
 
 interface FiledIssue {
   number: number;
@@ -9,6 +9,20 @@ interface FiledIssue {
   title: string;
   type: "bug" | "enhancement";
 }
+
+interface CycleLink {
+  label: string;
+  url: string;
+}
+
+interface CycleStatus {
+  phase: "running" | "shipped" | "error";
+  note: string;
+  links: CycleLink[];
+}
+
+const CYCLE_POLL_MS = 15_000;
+const CYCLE_MAX_POLLS = 24;
 
 // The Maintenance phase never "completes" — after release, the product enters
 // an ongoing cycle of corrective and perfective work. This panel is the intake:
@@ -26,6 +40,44 @@ export default function MaintenancePanel({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filed, setFiled] = useState<FiledIssue[]>([]);
+  const [cycles, setCycles] = useState<Record<number, CycleStatus>>({});
+  const cancelRef = useRef(false);
+
+  // Run the full maintenance mini-cycle for an issue: fix branch → PR → CI →
+  // merge → patch release, polling until the server reports done.
+  const runCycle = async (issue: FiledIssue) => {
+    cancelRef.current = false;
+    const setCycle = (status: CycleStatus) =>
+      setCycles((prev) => ({ ...prev, [issue.number]: status }));
+    setCycle({ phase: "running", note: "Engineering the fix…", links: [] });
+    try {
+      let state: unknown;
+      for (let poll = 0; poll <= CYCLE_MAX_POLLS; poll++) {
+        const res = await fetch("/api/maintenance/cycle", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ repo, issueNumber: issue.number, state }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error ?? `Cycle failed with HTTP ${res.status}`);
+        if (data.done) {
+          setCycle({ phase: "shipped", note: data.output, links: data.links ?? [] });
+          return;
+        }
+        state = data.state;
+        setCycle({ phase: "running", note: data.output, links: data.links ?? [] });
+        if (cancelRef.current) return;
+        await new Promise((r) => setTimeout(r, CYCLE_POLL_MS));
+      }
+      throw new Error("Timed out waiting for the maintenance CI to complete");
+    } catch (err) {
+      setCycle({
+        phase: "error",
+        note: err instanceof Error ? err.message : "Maintenance cycle failed",
+        links: [],
+      });
+    }
+  };
 
   if (!released || !repo) {
     return (
@@ -127,29 +179,83 @@ export default function MaintenancePanel({
       </button>
 
       {filed.length > 0 && (
-        <ul className="mt-4 space-y-1.5 border-t border-slate-800 pt-3">
-          {filed.map((issue) => (
-            <li key={issue.number}>
-              <a
-                href={issue.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-1.5 text-xs text-indigo-300 hover:underline"
-              >
-                <span
-                  className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium uppercase ${
-                    issue.type === "bug"
-                      ? "bg-rose-500/15 text-rose-300"
-                      : "bg-indigo-500/15 text-indigo-300"
-                  }`}
-                >
-                  {issue.type}
-                </span>
-                #{issue.number} {issue.title}
-                <ExternalLink className="h-3 w-3" />
-              </a>
-            </li>
-          ))}
+        <ul className="mt-4 space-y-3 border-t border-slate-800 pt-3">
+          {filed.map((issue) => {
+            const cycle = cycles[issue.number];
+            return (
+              <li key={issue.number} className="rounded-lg border border-slate-800 p-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <a
+                    href={issue.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex min-w-0 items-center gap-1.5 text-xs text-indigo-300 hover:underline"
+                  >
+                    <span
+                      className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium uppercase ${
+                        issue.type === "bug"
+                          ? "bg-rose-500/15 text-rose-300"
+                          : "bg-indigo-500/15 text-indigo-300"
+                      }`}
+                    >
+                      {issue.type}
+                    </span>
+                    <span className="truncate">
+                      #{issue.number} {issue.title}
+                    </span>
+                    <ExternalLink className="h-3 w-3 shrink-0" />
+                  </a>
+                  {(!cycle || cycle.phase === "error") && (
+                    <button
+                      onClick={() => runCycle(issue)}
+                      className="flex shrink-0 items-center gap-1.5 rounded-lg bg-emerald-600 px-2.5 py-1 text-[11px] font-semibold text-white transition-colors hover:bg-emerald-500"
+                    >
+                      <Rocket className="h-3 w-3" />
+                      {cycle?.phase === "error" ? "Retry fix" : "Ship fix"}
+                    </button>
+                  )}
+                  {cycle?.phase === "running" && (
+                    <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-indigo-300">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      In progress
+                    </span>
+                  )}
+                  {cycle?.phase === "shipped" && (
+                    <span className="shrink-0 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium uppercase text-emerald-400">
+                      shipped
+                    </span>
+                  )}
+                </div>
+                {cycle && (
+                  <div className="mt-2">
+                    <p
+                      className={`text-[11px] ${
+                        cycle.phase === "error" ? "text-rose-300" : "text-slate-400"
+                      }`}
+                    >
+                      {cycle.note}
+                    </p>
+                    {cycle.links.length > 0 && (
+                      <div className="mt-1.5 flex flex-wrap gap-1.5">
+                        {cycle.links.map((link) => (
+                          <a
+                            key={`${link.label}-${link.url}`}
+                            href={link.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-1 rounded-full border border-indigo-500/40 bg-indigo-500/10 px-2 py-0.5 text-[10px] font-medium text-indigo-300 transition-colors hover:bg-indigo-500/25"
+                          >
+                            {link.label}
+                            <ExternalLink className="h-2.5 w-2.5" />
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>

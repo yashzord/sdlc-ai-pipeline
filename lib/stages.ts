@@ -14,6 +14,8 @@ export type StageId =
   | "review"
   | "rework"
   | "tests"
+  | "ci_verify"
+  | "uat"
   | "release_approval"
   | "release";
 
@@ -117,6 +119,22 @@ export const STAGES: StageMeta[] = [
     title: "Test Engineering",
     role: "QA Engineer",
     description: "Commits Vitest tests for the logic core — CI runs them for real",
+  },
+  {
+    id: "ci_verify",
+    phase: "Testing",
+    title: "CI Verification & Self-Heal",
+    role: "DevOps Engineer",
+    description:
+      "Watches the PR's CI run; on a red build it reads the failure logs and pushes fix commits — up to two attempts — until the build is green",
+  },
+  {
+    id: "uat",
+    phase: "Testing",
+    title: "User Acceptance Testing",
+    role: "You (Stakeholder)",
+    description:
+      "Try the product yourself (a live preview deploy when Vercel is connected) and accept it — or request changes for one fix cycle",
   },
   {
     id: "release_approval",

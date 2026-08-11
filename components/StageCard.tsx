@@ -12,6 +12,8 @@ import {
   SearchCheck,
   Wrench,
   FlaskConical,
+  HeartPulse,
+  UserCheck,
   ShieldCheck,
   Rocket,
   Check,
@@ -40,6 +42,8 @@ const STAGE_ICONS: Record<StageId, React.ComponentType<{ className?: string }>> 
   review: SearchCheck,
   rework: Wrench,
   tests: FlaskConical,
+  ci_verify: HeartPulse,
+  uat: UserCheck,
   release_approval: ShieldCheck,
   release: Rocket,
 };
