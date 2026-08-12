@@ -115,7 +115,9 @@ const APP_CONSTRAINTS = `The product is a fully client-side web app built with V
 - index.html — the entire UI: semantic markup plus an inline <style> block (self-contained dark theme, responsive), and it MUST include <script type="module" src="./src/main.ts"></script>
 - src/app.ts — the logic core: standalone TypeScript with ZERO imports, exporting typed functions/classes, input validation, and typed error classes
 - src/main.ts — the DOM layer: imports from "./app", wires inputs/outputs/events, no other imports
-No external packages, no network calls, no frameworks. Data may persist via localStorage.`;
+No external packages, no network calls, no frameworks. Data may persist via localStorage.
+Entity ids MUST be collision-proof: never derive an id from Date.now() alone (entities created in the same millisecond collide — a real bug this pipeline has shipped). Combine the timestamp with a monotonic counter, or use crypto.randomUUID().
+Code comments must describe the code as it is — never leave debugging narration, self-dialogue, or notes about tests/fix attempts in comments.`;
 
 function need<T>(value: T | undefined | null, what: string): T {
   if (value === undefined || value === null) {
@@ -970,7 +972,7 @@ async function runCiVerify(ctx: StageContext): Promise<StageResult> {
 
   const { data, model } = await aiJson(
     ctx.ai,
-    `${SHARED_RULES}\nYou are the engineer on call for a red CI build. Diagnose from the log, fix the root cause — the app if the app is wrong, the test if the test is wrong. Never delete or weaken tests to force green.`,
+    `${SHARED_RULES}\nYou are the engineer on call for a red CI build. Diagnose from the log, fix the root cause — the app if the app is wrong, the test if the test is wrong. Never delete or weaken tests to force green.\nThe root cause often hides AWAY from the failing assertion: before rewriting the function the test points at, check systemic causes — id/key generation (Date.now() ids collide within one millisecond), state persistence, and shared fixtures. If an assertion fails on "empty result", trace the INPUT data first.\nOutput clean final code only — no debugging narration, no self-dialogue, no comments about the fix attempt.`,
     `CI failed on the pull request for "${artifacts.featureTitle}".\n\nFailing checks:\n${checkLines}\n\nLog tail from the failed job:\n\`\`\`\n${logTail.slice(-5_000) || "(logs unavailable — reason about the code directly)"}\n\`\`\`\n\nCurrent files:\n\n--- src/app.ts ---\n${appTs}\n\n--- src/app.test.ts ---\n${testTs}\n\n--- src/main.ts ---\n${mainTs}\n\n${APP_CONSTRAINTS}\n\nReturn JSON:\n- "diagnosis": 2-3 sentence markdown root-cause analysis citing the log\n- "files": ONLY the files you changed (src/app.ts, src/app.test.ts, src/main.ts, or index.html), each with "path" and the COMPLETE fixed "content"`,
     z.object({ diagnosis: z.string(), files: z.array(FILE_SCHEMA) }),
     0.3
