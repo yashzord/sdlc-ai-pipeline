@@ -67,18 +67,23 @@ export function hasServerKey(): boolean {
   return Boolean(process.env.GEMINI_API_KEY);
 }
 
+// Stages that echo back whole source files need far more room than prose
+// stages — 8k truncates a multi-file revision mid-flight.
+export const CODE_OUTPUT_TOKENS = 16_384;
+
 export async function aiText(
   cfg: AIConfig,
   system: string,
   prompt: string,
-  temperature = 0.5
+  temperature = 0.5,
+  maxOutputTokens = 8192
 ): Promise<{ text: string; model: string }> {
   const { text } = await generateText({
     model: languageModel(cfg),
     system,
     prompt,
     temperature,
-    maxOutputTokens: 8192,
+    maxOutputTokens,
     maxRetries: 3,
     providerOptions: providerOptions(cfg),
   });
@@ -91,7 +96,8 @@ export async function aiJson<SCHEMA extends z.ZodTypeAny>(
   system: string,
   prompt: string,
   schema: SCHEMA,
-  temperature = 0.3
+  temperature = 0.3,
+  maxOutputTokens = 8192
 ): Promise<{ data: z.infer<SCHEMA>; model: string }> {
   const { object } = await generateObject({
     model: languageModel(cfg),
@@ -99,7 +105,7 @@ export async function aiJson<SCHEMA extends z.ZodTypeAny>(
     prompt,
     schema,
     temperature,
-    maxOutputTokens: 8192,
+    maxOutputTokens,
     maxRetries: 3,
     providerOptions: providerOptions(cfg),
   });

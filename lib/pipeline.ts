@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { StageId } from "./stages";
 import type { GithubSession, JiraSession, VercelSession } from "./session";
-import { aiJson, aiText, type AIConfig } from "./ai";
+import { aiJson, aiText, CODE_OUTPUT_TOKENS, type AIConfig } from "./ai";
 import {
   GithubError,
   closeIssue,
@@ -111,6 +111,10 @@ export interface StageResult {
 const SHARED_RULES = `You are one specialist agent inside an automated SDLC pipeline that ships real products (GitHub repos, Jira tickets, CI, live deployments).
 Be concrete and specific to the product described — never generic filler.`;
 
+// Every file returned must stand alone as the whole file — truncation here is
+// what once replaced a full UI with a placeholder.
+const FILE_COMPLETENESS_RULE = `Every file you return must be the ENTIRE file, ready to commit as-is: never abbreviate, never elide with comments like "rest unchanged", never return a placeholder or skeleton. If a file would be too long to reproduce in full, OMIT it from the response entirely rather than shortening it — omitting is safe, truncating destroys the file.`;
+
 const APP_CONSTRAINTS = `The product is a fully client-side web app built with Vite and deployed to static hosting:
 - index.html — the entire UI: semantic markup plus an inline <style> block (self-contained dark theme, responsive), and it MUST include <script type="module" src="./src/main.ts"></script>
 - src/app.ts — the logic core: standalone TypeScript with ZERO imports, exporting typed functions/classes, input validation, and typed error classes
@@ -133,19 +137,41 @@ function repoRef(ctx: StageContext): RepoRef {
 // Guard against automated revisions that gut a file. This is a real shipped
 // failure: a rework once replaced the entire 222-line UI with the 12-line
 // scaffold placeholder, CI stayed green, and the placeholder went live.
-export function assertCompleteRevision(path: string, revised: string, current?: string): void {
-  if (path === "index.html") {
-    if (revised.includes("🚧") || !revised.includes("src/main.ts")) {
-      throw new Error(
-        "Revision check failed: index.html came back as a stub/placeholder — refusing to commit it"
-      );
-    }
+export function revisionProblem(
+  path: string,
+  revised: string,
+  current?: string
+): string | null {
+  if (path === "index.html" && (revised.includes("🚧") || !revised.includes("src/main.ts"))) {
+    return "came back as a stub/placeholder";
   }
   if (current && current.length > 2_000 && revised.length < current.length * 0.35) {
-    throw new Error(
-      `Revision check failed: ${path} shrank from ${current.length} to ${revised.length} chars — refusing to commit a gutted file`
-    );
+    return `shrank from ${current.length} to ${revised.length} chars (truncated, not a real revision)`;
   }
+  return null;
+}
+
+export interface RevisionFilter {
+  valid: Array<{ path: string; content: string }>;
+  skipped: string[];
+}
+
+// A truncated file is dropped, not fatal: the model ran out of output budget
+// mid-response, so the other files it returned are still good. Keeping the
+// current version of the offending file is always safe — losing a revision is
+// recoverable, committing a gutted file is what shipped a broken product.
+export function filterCompleteRevisions(
+  files: Array<{ path: string; content: string }>,
+  current: Record<string, string | undefined>
+): RevisionFilter {
+  const valid: Array<{ path: string; content: string }> = [];
+  const skipped: string[] = [];
+  for (const f of files) {
+    const problem = revisionProblem(f.path, f.content, current[f.path]);
+    if (problem) skipped.push(`\`${f.path}\` — ${problem}; kept the existing version`);
+    else valid.push(f);
+  }
+  return { valid, skipped };
 }
 
 /* ------------------------------ repo scaffold ------------------------------ */
@@ -661,14 +687,19 @@ async function runCode(ctx: StageContext): Promise<StageResult> {
         : ""
     }\n\n${APP_CONSTRAINTS}\n\nReturn JSON:\n- "note": 2-3 sentence markdown note on what you built\n- "files": exactly four entries with "path" and "content":\n  1. path "src/app.ts" — the logic core (~80-140 lines)\n  2. path "src/main.ts" — the DOM layer (~60-100 lines)\n  3. path "index.html" — the complete UI with inline styles (~80-140 lines), dark theme, responsive, and the module script tag\n  4. path "src/app.test.ts" — the developer's own unit tests: 3-5 happy-path Vitest cases for the core functions (QA writes the deep suite later). CRITICAL: import every vitest API you use from "vitest" (nothing is global), import the module as "./app", use only exports that exist in your src/app.ts, and stub localStorage via a minimal in-memory globalThis.localStorage in beforeEach if the module uses it.\nThe app must be genuinely usable, not a stub.`,
     z.object({ note: z.string(), files: z.array(FILE_SCHEMA) }),
-    0.3
+    0.3,
+    CODE_OUTPUT_TOKENS
   );
 
   const ref = repoRef(ctx);
   const allowed = new Set(["src/app.ts", "src/main.ts", "index.html", "src/app.test.ts"]);
   const files = data.files.filter((f) => allowed.has(f.path));
   if (files.length < 3) throw new Error("Implementation did not produce the required files");
-  for (const f of files) assertCompleteRevision(f.path, f.content);
+  // The first write of each file has no baseline, so only the stub check applies.
+  for (const f of files) {
+    const problem = revisionProblem(f.path, f.content);
+    if (problem) throw new Error(`Implementation produced an unusable ${f.path} — it ${problem}`);
+  }
 
   let lastSha = "";
   for (const f of files) {
@@ -786,21 +817,26 @@ async function runRework(ctx: StageContext): Promise<StageResult> {
   const { data, model } = await aiJson(
     ctx.ai,
     `${SHARED_RULES}\nYou are the senior engineer whose pull request received a REQUEST CHANGES review. Fix every finding properly — no shortcuts.`,
-    `The review:\n${reviewNotes}\n\nCurrent files:\n\n--- src/app.ts ---\n${appTs}\n\n--- src/main.ts ---\n${mainTs}\n\n--- index.html ---\n${indexHtml}\n\n--- src/app.test.ts (unit tests; keep them passing) ---\n${devTests}\n\n${APP_CONSTRAINTS}\n\nReturn JSON:\n- "note": 2-3 sentence markdown summary of the rework\n- "addressed": array of one-line strings, one per finding fixed\n- "files": ONLY the files you changed, each with "path" (src/app.ts, src/main.ts, index.html, or src/app.test.ts) and the COMPLETE revised "content". If your changes alter behavior the unit tests cover, include the updated src/app.test.ts.`,
+    `The review:\n${reviewNotes}\n\nCurrent files:\n\n--- src/app.ts ---\n${appTs}\n\n--- src/main.ts ---\n${mainTs}\n\n--- index.html ---\n${indexHtml}\n\n--- src/app.test.ts (unit tests; keep them passing) ---\n${devTests}\n\n${APP_CONSTRAINTS}\n\nReturn JSON:\n- "note": 2-3 sentence markdown summary of the rework\n- "addressed": array of one-line strings, one per finding fixed\n- "files": ONLY the files you actually modified (most reviews touch src/app.ts alone — do NOT include a file you did not change), each with "path" (src/app.ts, src/main.ts, index.html, or src/app.test.ts) and the COMPLETE revised "content". ${FILE_COMPLETENESS_RULE} If your changes alter behavior the unit tests cover, include the updated src/app.test.ts.`,
     z.object({ note: z.string(), addressed: z.array(z.string()), files: z.array(FILE_SCHEMA) }),
-    0.3
+    0.3,
+    CODE_OUTPUT_TOKENS
   );
 
   const allowed = new Set(["src/app.ts", "src/main.ts", "index.html", "src/app.test.ts"]);
-  const changed = data.files.filter((f) => allowed.has(f.path));
-  if (changed.length === 0) throw new Error("Rework produced no file changes");
-  const reworkCurrent: Record<string, string> = {
+  const returned = data.files.filter((f) => allowed.has(f.path));
+  if (returned.length === 0) throw new Error("Rework produced no file changes");
+  const { valid: changed, skipped } = filterCompleteRevisions(returned, {
     "src/app.ts": appTs,
     "src/main.ts": mainTs,
     "index.html": indexHtml,
     "src/app.test.ts": devTests,
-  };
-  for (const f of changed) assertCompleteRevision(f.path, f.content, reworkCurrent[f.path]);
+  });
+  if (changed.length === 0) {
+    throw new Error(
+      `Rework returned only truncated files, so nothing was committed: ${skipped.join("; ")}. Re-run this stage.`
+    );
+  }
 
   let lastSha = "";
   let newModuleSource = ctx.artifacts.moduleSource;
@@ -841,7 +877,9 @@ async function runRework(ctx: StageContext): Promise<StageResult> {
 
   const output = `${data.note}\n\n## Findings Addressed\n${data.addressed
     .map((a) => `- ${a}`)
-    .join("\n")}\n\n## Re-review\n${reReview}${
+    .join("\n")}${
+    skipped.length ? `\n\n> Skipped incomplete revisions: ${skipped.join("; ")}.` : ""
+  }\n\n## Re-review\n${reReview}${
     verdict === "REQUEST CHANGES"
       ? "\n\n> Re-review still requests changes after one rework iteration — proceeding with the objections on record (single-iteration policy)."
       : ""
@@ -999,22 +1037,27 @@ async function runCiVerify(ctx: StageContext): Promise<StageResult> {
   const { data, model } = await aiJson(
     ctx.ai,
     `${SHARED_RULES}\nYou are the engineer on call for a red CI build. Diagnose from the log, fix the root cause — the app if the app is wrong, the test if the test is wrong. Never delete or weaken tests to force green.\nThe root cause often hides AWAY from the failing assertion: before rewriting the function the test points at, check systemic causes — id/key generation (Date.now() ids collide within one millisecond), state persistence, and shared fixtures. If an assertion fails on "empty result", trace the INPUT data first.\nOutput clean final code only — no debugging narration, no self-dialogue, no comments about the fix attempt.`,
-    `CI failed on the pull request for "${artifacts.featureTitle}".\n\nFailing checks:\n${checkLines}\n\nLog tail from the failed job:\n\`\`\`\n${logTail.slice(-5_000) || "(logs unavailable — reason about the code directly)"}\n\`\`\`\n\nCurrent files:\n\n--- src/app.ts ---\n${appTs}\n\n--- src/app.test.ts ---\n${testTs}\n\n--- src/main.ts ---\n${mainTs}\n\n${APP_CONSTRAINTS}\n\nReturn JSON:\n- "diagnosis": 2-3 sentence markdown root-cause analysis citing the log\n- "files": ONLY the files you changed (src/app.ts, src/app.test.ts, src/main.ts, or index.html), each with "path" and the COMPLETE fixed "content"`,
+    `CI failed on the pull request for "${artifacts.featureTitle}".\n\nFailing checks:\n${checkLines}\n\nLog tail from the failed job:\n\`\`\`\n${logTail.slice(-5_000) || "(logs unavailable — reason about the code directly)"}\n\`\`\`\n\nCurrent files:\n\n--- src/app.ts ---\n${appTs}\n\n--- src/app.test.ts ---\n${testTs}\n\n--- src/main.ts ---\n${mainTs}\n\n${APP_CONSTRAINTS}\n\nReturn JSON:\n- "diagnosis": 2-3 sentence markdown root-cause analysis citing the log\n- "files": ONLY the files you changed (src/app.ts, src/app.test.ts, src/main.ts, or index.html), each with "path" and the COMPLETE fixed "content". ${FILE_COMPLETENESS_RULE}`,
     z.object({ diagnosis: z.string(), files: z.array(FILE_SCHEMA) }),
-    0.3
+    0.3,
+    CODE_OUTPUT_TOKENS
   );
 
   const allowed = new Set(["src/app.ts", "src/app.test.ts", "src/main.ts", "index.html"]);
-  const changed = data.files.filter((f) => allowed.has(f.path));
-  if (changed.length === 0) {
+  const returned = data.files.filter((f) => allowed.has(f.path));
+  if (returned.length === 0) {
     throw new Error(`CI is red and the self-heal produced no fix. Diagnosis: ${data.diagnosis}`);
   }
-  const healCurrent: Record<string, string> = {
+  const { valid: changed, skipped } = filterCompleteRevisions(returned, {
     "src/app.ts": appTs,
     "src/app.test.ts": testTs,
     "src/main.ts": mainTs,
-  };
-  for (const f of changed) assertCompleteRevision(f.path, f.content, healCurrent[f.path]);
+  });
+  if (changed.length === 0) {
+    throw new Error(
+      `The self-heal returned only truncated files, so nothing was committed: ${skipped.join("; ")}. Re-run this stage.`
+    );
+  }
 
   for (const f of changed) {
     const commit = await commitFile(
@@ -1031,7 +1074,9 @@ async function runCiVerify(ctx: StageContext): Promise<StageResult> {
   artifacts.ciFixAttempts = attempts + 1;
 
   return {
-    output: `## CI Red — Self-Heal Attempt ${attempts + 1}/2 🔧\n\n**Failing checks:**\n${checkLines}\n\n**Diagnosis:**\n${data.diagnosis}\n\n**Fixed:** ${changed.map((f) => `\`${f.path}\``).join(", ")}\n\n_Fix pushed — waiting for CI to re-run._`,
+    output: `## CI Red — Self-Heal Attempt ${attempts + 1}/2 🔧\n\n**Failing checks:**\n${checkLines}\n\n**Diagnosis:**\n${data.diagnosis}\n\n**Fixed:** ${changed.map((f) => `\`${f.path}\``).join(", ")}${
+      skipped.length ? `\n\n> Skipped incomplete revisions: ${skipped.join("; ")}.` : ""
+    }\n\n_Fix pushed — waiting for CI to re-run._`,
     links: [
       { label: "Fix commits", url: `${artifacts.repoUrl}/commits/${branch}` },
       { label: "CI runs", url: `${artifacts.repoUrl}/actions` },
@@ -1071,20 +1116,25 @@ async function runUat(ctx: StageContext): Promise<StageResult> {
     const { data, model } = await aiJson(
       ctx.ai,
       `${SHARED_RULES}\nYou are the senior engineer fixing a product that failed user acceptance testing. Address the stakeholder's feedback exactly.`,
-      `Product: "${artifacts.featureTitle}"\n\nUAT feedback from the stakeholder:\n"${ctx.input.comment ?? "No specifics — polish rough edges."}"\n\nCurrent files:\n\n--- src/app.ts ---\n${appTs}\n\n--- src/main.ts ---\n${mainTs}\n\n--- index.html ---\n${indexHtml}\n\n--- src/app.test.ts (test suite; keep it passing) ---\n${suiteTs}\n\n${APP_CONSTRAINTS}\n\nReturn JSON:\n- "note": 2-3 sentence markdown summary of what you changed to satisfy the feedback\n- "files": ONLY the files you changed, each with "path" (src/app.ts, src/main.ts, index.html, or src/app.test.ts) and the COMPLETE revised "content". If your changes alter behavior the tests cover, include the updated src/app.test.ts.`,
+      `Product: "${artifacts.featureTitle}"\n\nUAT feedback from the stakeholder:\n"${ctx.input.comment ?? "No specifics — polish rough edges."}"\n\nCurrent files:\n\n--- src/app.ts ---\n${appTs}\n\n--- src/main.ts ---\n${mainTs}\n\n--- index.html ---\n${indexHtml}\n\n--- src/app.test.ts (test suite; keep it passing) ---\n${suiteTs}\n\n${APP_CONSTRAINTS}\n\nReturn JSON:\n- "note": 2-3 sentence markdown summary of what you changed to satisfy the feedback\n- "files": ONLY the files you changed, each with "path" (src/app.ts, src/main.ts, index.html, or src/app.test.ts) and the COMPLETE revised "content". ${FILE_COMPLETENESS_RULE} If your changes alter behavior the tests cover, include the updated src/app.test.ts.`,
       z.object({ note: z.string(), files: z.array(FILE_SCHEMA) }),
-      0.3
+      0.3,
+      CODE_OUTPUT_TOKENS
     );
     const allowed = new Set(["src/app.ts", "src/main.ts", "index.html", "src/app.test.ts"]);
-    const changed = data.files.filter((f) => allowed.has(f.path));
-    if (changed.length === 0) throw new Error("UAT fix cycle produced no file changes");
-    const uatCurrent: Record<string, string> = {
+    const returned = data.files.filter((f) => allowed.has(f.path));
+    if (returned.length === 0) throw new Error("UAT fix cycle produced no file changes");
+    const { valid: changed, skipped } = filterCompleteRevisions(returned, {
       "src/app.ts": appTs,
       "src/main.ts": mainTs,
       "index.html": indexHtml,
       "src/app.test.ts": suiteTs,
-    };
-    for (const f of changed) assertCompleteRevision(f.path, f.content, uatCurrent[f.path]);
+    });
+    if (changed.length === 0) {
+      throw new Error(
+        `The UAT fix returned only truncated files, so nothing was committed: ${skipped.join("; ")}. Re-run this stage.`
+      );
+    }
     for (const f of changed) {
       const commit = await commitFile(
         ctx.gh.token,
@@ -1098,7 +1148,9 @@ async function runUat(ctx: StageContext): Promise<StageResult> {
       if (f.path === "src/app.ts") artifacts.moduleSource = f.content;
     }
     return {
-      output: `## UAT Feedback Applied 🔁\n\nFeedback: "${ctx.input.comment}"\n\n${data.note}\n\n**Fixed:** ${changed.map((f) => `\`${f.path}\``).join(", ")}\n\n> One UAT fix cycle applied — accepted to proceed. The release gate re-verifies CI on the new commits.`,
+      output: `## UAT Feedback Applied 🔁\n\nFeedback: "${ctx.input.comment}"\n\n${data.note}\n\n**Fixed:** ${changed.map((f) => `\`${f.path}\``).join(", ")}${
+        skipped.length ? `\n\n> Skipped incomplete revisions: ${skipped.join("; ")}.` : ""
+      }\n\n> One UAT fix cycle applied — accepted to proceed. The release gate re-verifies CI on the new commits.`,
       links: [{ label: "UAT fix commits", url: `${artifacts.repoUrl}/commits/${branch}` }],
       model,
       artifacts: { ...artifacts, uatApproved: true },
