@@ -421,8 +421,8 @@ async function runReleaseApproval(ctx: StageContext): Promise<StageResult> {
 async function runRequirements(ctx: StageContext): Promise<StageResult> {
   const { data, model } = await aiJson(
     ctx.ai,
-    `${SHARED_RULES}\nYou are a senior business analyst.`,
-    `Raw product idea:\n\n"${ctx.requirement}"\n\n${APP_CONSTRAINTS}\n\nReturn JSON with:\n- "title": short product title (max 6 words)\n- "slug": kebab-case repository name (max 4 words, no suffixes)\n- "markdown": a requirements document with sections: ## Functional Requirements (numbered FR-1..., 5-8 items with one-line rationale, all achievable in a client-side app), ## Non-Functional Requirements (NFR-1..., 4-5 items), ## Out of Scope (3 bullets), ## Open Questions (3 numbered questions a stakeholder must decide — genuine forks in scope or behavior, not rhetorical)\n- "questions": those same 3 open questions as a plain array of strings`,
+    `${SHARED_RULES}\nYou are a senior business analyst writing a Software Requirement Specification (SRS).`,
+    `Raw product idea:\n\n"${ctx.requirement}"\n\n${APP_CONSTRAINTS}\n\nReturn JSON with:\n- "title": short product title (max 6 words)\n- "slug": kebab-case repository name (max 4 words, no suffixes)\n- "markdown": an SRS with sections: ## Introduction (purpose and intended users, 2-3 sentences), ## Functional Requirements (numbered FR-1..., 5-8 items with one-line rationale, all achievable in a client-side app — each specific, measurable, and testable), ## Non-Functional Requirements (NFR-1..., 4-5 items, each quantified where possible), ## Constraints (2-3 bullets: technical and platform constraints from the app model), ## Out of Scope (3 bullets), ## Open Questions (3 numbered questions a stakeholder must decide — genuine forks in scope or behavior, not rhetorical)\n- "questions": those same 3 open questions as a plain array of strings`,
     z.object({
       title: z.string(),
       slug: z.string(),
@@ -468,7 +468,10 @@ async function runRequirements(ctx: StageContext): Promise<StageResult> {
     ...(ctx.artifacts.planningDoc
       ? ([["docs/PLANNING.md", `${ctx.artifacts.planningDoc}\n`]] as Array<[string, string]>)
       : []),
-    ["docs/REQUIREMENTS.md", `# Requirements — ${data.title}\n\n${data.markdown}\n`],
+    [
+      "docs/REQUIREMENTS.md",
+      `# Software Requirement Specification — ${data.title}\n\n${data.markdown}\n`,
+    ],
     ["package.json", SCAFFOLD_PACKAGE(slug)],
     ["tsconfig.json", SCAFFOLD_TSCONFIG],
     ["vite.config.ts", SCAFFOLD_VITE],
@@ -527,9 +530,16 @@ async function runStories(ctx: StageContext): Promise<StageResult> {
       ctx.artifacts.clarifications
         ? `\n\nStakeholder clarifications (binding decisions):\n${ctx.artifacts.clarifications}`
         : ""
-    }\n\nReturn JSON: {"stories": [...]} with 4-6 stories covering the v1 of this client-side app. Each story:\n- "title": imperative, max 10 words\n- "points": 1, 2, 3, 5 or 8\n- "markdown": "As a <role>, I want <capability> so that <benefit>." followed by an "Acceptance criteria" bullet list (2-3 bullets)`,
+    }\n\nReturn JSON: {"stories": [...]} with 4-6 stories covering the v1 of this client-side app. Each story:\n- "title": imperative, max 10 words\n- "points": 1, 2, 3, 5 or 8\n- "priority": MoSCoW priority — exactly "Must", "Should", or "Could" (v1 needs at least two Must stories)\n- "markdown": "As a <role>, I want <capability> so that <benefit>." followed by an "Acceptance criteria" bullet list (2-3 bullets)`,
     z.object({
-      stories: z.array(z.object({ title: z.string(), points: z.number(), markdown: z.string() })),
+      stories: z.array(
+        z.object({
+          title: z.string(),
+          points: z.number(),
+          priority: z.string(),
+          markdown: z.string(),
+        })
+      ),
     }),
     0.5
   );
@@ -545,24 +555,26 @@ async function runStories(ctx: StageContext): Promise<StageResult> {
         ctx.jira,
         "Story",
         story.title,
-        `${story.markdown}\n\nStory points: ${story.points}\nEpic: ${epic.jiraKey}`,
+        `${story.markdown}\n\nStory points: ${story.points}\nMoSCoW priority: ${story.priority}\nEpic: ${epic.jiraKey}`,
         epic.jiraKey
       );
       stories.push({ title: story.title, url: issue.url, jiraKey: issue.key });
       links.push({ label: issue.key, url: issue.url });
-      lines.push(`**${issue.key} — ${story.title}** (${story.points} pts)\n${story.markdown}`);
+      lines.push(
+        `**${issue.key} — ${story.title}** (${story.points} pts · ${story.priority})\n${story.markdown}`
+      );
     } else {
       const issue = await createIssue(
         ctx.gh.token,
         ref,
         `[Story] ${story.title}`,
-        `${story.markdown}\n\n**Story points:** ${story.points}\n**Epic:** #${epic.issueNumber}`,
+        `${story.markdown}\n\n**Story points:** ${story.points}\n**MoSCoW priority:** ${story.priority}\n**Epic:** #${epic.issueNumber}`,
         []
       );
       stories.push({ title: story.title, url: issue.html_url, issueNumber: issue.number });
       links.push({ label: `#${issue.number}`, url: issue.html_url });
       lines.push(
-        `**US-${i + 1} — ${story.title}** (#${issue.number}, ${story.points} pts)\n${story.markdown}`
+        `**US-${i + 1} — ${story.title}** (#${issue.number}, ${story.points} pts · ${story.priority})\n${story.markdown}`
       );
     }
   }
@@ -585,7 +597,7 @@ async function runArchitecture(ctx: StageContext): Promise<StageResult> {
       ctx.artifacts.clarifications
         ? `\nStakeholder clarifications (binding decisions):\n${ctx.artifacts.clarifications}`
         : ""
-    }\n\n${APP_CONSTRAINTS}\n\nProduce an architecture doc with sections: ## System Overview (short paragraph + indented text diagram of index.html → src/main.ts → src/app.ts), ## Logic Core Design (src/app.ts: exported types and functions as a code-free list), ## UI Design (index.html: the main screens/controls and interaction flow), ## State & Persistence (what lives in memory vs localStorage), ## Key Risks (3 risks with mitigations). Under ~450 words.`,
+    }\n\n${APP_CONSTRAINTS}\n\nProduce a design document with two parts.\n# High-Level Design (HLD): ## System Overview (short paragraph + indented text diagram of index.html → src/main.ts → src/app.ts), ## Component Responsibilities (one line per component), ## Data Design (what lives in memory vs localStorage, with the storage shape).\n# Low-Level Design (LLD): ## Logic Core Specification (src/app.ts: every exported type and function as a code-free list with one-line contracts), ## UI Wireframe (an ASCII wireframe in a code block showing the screen layout — boxes for each control/region, labeled), ## Interaction Flow (numbered user actions → system responses), ## Key Risks (3 risks with mitigations).\nUnder ~600 words total.`,
     0.5
   );
 
@@ -627,15 +639,15 @@ async function runCode(ctx: StageContext): Promise<StageResult> {
       ctx.artifacts.clarifications
         ? `\n\nStakeholder clarifications (binding decisions):\n${ctx.artifacts.clarifications}`
         : ""
-    }\n\n${APP_CONSTRAINTS}\n\nReturn JSON:\n- "note": 2-3 sentence markdown note on what you built\n- "files": exactly three entries with "path" and "content":\n  1. path "src/app.ts" — the logic core (~80-140 lines)\n  2. path "src/main.ts" — the DOM layer (~60-100 lines)\n  3. path "index.html" — the complete UI with inline styles (~80-140 lines), dark theme, responsive, and the module script tag\nThe app must be genuinely usable, not a stub.`,
+    }\n\n${APP_CONSTRAINTS}\n\nReturn JSON:\n- "note": 2-3 sentence markdown note on what you built\n- "files": exactly four entries with "path" and "content":\n  1. path "src/app.ts" — the logic core (~80-140 lines)\n  2. path "src/main.ts" — the DOM layer (~60-100 lines)\n  3. path "index.html" — the complete UI with inline styles (~80-140 lines), dark theme, responsive, and the module script tag\n  4. path "src/app.test.ts" — the developer's own unit tests: 3-5 happy-path Vitest cases for the core functions (QA writes the deep suite later). CRITICAL: import every vitest API you use from "vitest" (nothing is global), import the module as "./app", use only exports that exist in your src/app.ts, and stub localStorage via a minimal in-memory globalThis.localStorage in beforeEach if the module uses it.\nThe app must be genuinely usable, not a stub.`,
     z.object({ note: z.string(), files: z.array(FILE_SCHEMA) }),
     0.3
   );
 
   const ref = repoRef(ctx);
-  const allowed = new Set(["src/app.ts", "src/main.ts", "index.html"]);
+  const allowed = new Set(["src/app.ts", "src/main.ts", "index.html", "src/app.test.ts"]);
   const files = data.files.filter((f) => allowed.has(f.path));
-  if (files.length !== 3) throw new Error("Implementation did not produce the three required files");
+  if (files.length < 3) throw new Error("Implementation did not produce the required files");
 
   let lastSha = "";
   for (const f of files) {
@@ -743,21 +755,22 @@ async function runRework(ctx: StageContext): Promise<StageResult> {
   const reviewNotes = need(ctx.artifacts.reviewNotes, "reviewNotes");
   const ref = repoRef(ctx);
 
-  const [appTs, mainTs, indexHtml] = await Promise.all([
+  const [appTs, mainTs, indexHtml, devTests] = await Promise.all([
     readFileContent(ctx.gh.token, ref, "src/app.ts", branch),
     readFileContent(ctx.gh.token, ref, "src/main.ts", branch),
     readFileContent(ctx.gh.token, ref, "index.html", branch),
+    readFileContent(ctx.gh.token, ref, "src/app.test.ts", branch).catch(() => ""),
   ]);
 
   const { data, model } = await aiJson(
     ctx.ai,
     `${SHARED_RULES}\nYou are the senior engineer whose pull request received a REQUEST CHANGES review. Fix every finding properly — no shortcuts.`,
-    `The review:\n${reviewNotes}\n\nCurrent files:\n\n--- src/app.ts ---\n${appTs}\n\n--- src/main.ts ---\n${mainTs}\n\n--- index.html ---\n${indexHtml}\n\n${APP_CONSTRAINTS}\n\nReturn JSON:\n- "note": 2-3 sentence markdown summary of the rework\n- "addressed": array of one-line strings, one per finding fixed\n- "files": ONLY the files you changed, each with "path" (src/app.ts, src/main.ts, or index.html) and the COMPLETE revised "content"`,
+    `The review:\n${reviewNotes}\n\nCurrent files:\n\n--- src/app.ts ---\n${appTs}\n\n--- src/main.ts ---\n${mainTs}\n\n--- index.html ---\n${indexHtml}\n\n--- src/app.test.ts (unit tests; keep them passing) ---\n${devTests}\n\n${APP_CONSTRAINTS}\n\nReturn JSON:\n- "note": 2-3 sentence markdown summary of the rework\n- "addressed": array of one-line strings, one per finding fixed\n- "files": ONLY the files you changed, each with "path" (src/app.ts, src/main.ts, index.html, or src/app.test.ts) and the COMPLETE revised "content". If your changes alter behavior the unit tests cover, include the updated src/app.test.ts.`,
     z.object({ note: z.string(), addressed: z.array(z.string()), files: z.array(FILE_SCHEMA) }),
     0.3
   );
 
-  const allowed = new Set(["src/app.ts", "src/main.ts", "index.html"]);
+  const allowed = new Set(["src/app.ts", "src/main.ts", "index.html", "src/app.test.ts"]);
   const changed = data.files.filter((f) => allowed.has(f.path));
   if (changed.length === 0) throw new Error("Rework produced no file changes");
 
@@ -827,29 +840,46 @@ async function runTests(ctx: StageContext): Promise<StageResult> {
   const slug = need(ctx.artifacts.slug, "slug");
   const branch = need(ctx.artifacts.branch, "branch");
   const moduleSource = need(ctx.artifacts.moduleSource, "moduleSource");
+  const storyList = (ctx.artifacts.stories ?? [])
+    .map((s, i) => `${s.jiraKey ?? `US-${i + 1}`}: ${s.title}`)
+    .join("\n");
 
   const { data, model } = await aiJson(
     ctx.ai,
-    `${SHARED_RULES}\nYou are a QA automation engineer. Write Vitest tests that would actually fail on real bugs.`,
-    `Module under test — src/app.ts (import it as "./app"):\n\n\`\`\`typescript\n${moduleSource}\n\`\`\`\n\nReview findings to cover:\n${ctx.artifacts.reviewNotes ?? ""}\n\nReturn JSON:\n- "note": 2 sentence markdown test strategy\n- "source": complete Vitest test file importing from "./app". CRITICAL: import EVERY vitest API you use from "vitest" — e.g. import { describe, it, expect, beforeEach, afterEach, vi } from "vitest" — nothing is global. 6-10 focused test cases covering happy path, edge cases, and error handling. The tests MUST only use exports that actually exist in the module source above. Pure logic tests only — no DOM. If the module uses localStorage, stub it via a minimal in-memory globalThis.localStorage in beforeEach.`,
-    z.object({ note: z.string(), source: z.string() }),
+    `${SHARED_RULES}\nYou are a QA automation engineer. Write Vitest tests that would actually fail on real bugs, plus the formal test documentation a real testing phase produces.`,
+    `Module under test — src/app.ts (import it as "./app"):\n\n\`\`\`typescript\n${moduleSource}\n\`\`\`\n\nUser stories being verified:\n${storyList}\n\nReview findings to cover:\n${ctx.artifacts.reviewNotes ?? ""}\n\nReturn JSON:\n- "plan": a concise test plan in markdown: ## Objectives (2 bullets), ## Scope (what is and isn't tested — unit level for the logic core; the build acts as the system-level smoke test), ## Test Types (unit, regression via CI, acceptance via the UAT gate), ## Risk Focus (2-3 highest-risk areas in this module and why)\n- "traceability": a markdown Requirements Traceability Matrix table with columns Story | Test case(s) | Coverage — one row per user story above, naming the exact test case titles that verify it (write "build smoke test" for pure-UI stories the unit suite can't cover)\n- "note": 2 sentence markdown test strategy\n- "source": complete Vitest test file importing from "./app" (this REPLACES the developer's happy-path tests with the full suite). CRITICAL: import EVERY vitest API you use from "vitest" — e.g. import { describe, it, expect, beforeEach, afterEach, vi } from "vitest" — nothing is global. 8-12 focused test cases covering happy path, edge cases, and error handling, with titles matching the traceability matrix. The tests MUST only use exports that actually exist in the module source above. Pure logic tests only — no DOM. If the module uses localStorage, stub it via a minimal in-memory globalThis.localStorage in beforeEach.`,
+    z.object({
+      plan: z.string(),
+      traceability: z.string(),
+      note: z.string(),
+      source: z.string(),
+    }),
     0.3
   );
 
   const ref = repoRef(ctx);
+  const planCommit = await commitFile(
+    ctx.gh.token,
+    ref,
+    branch,
+    "docs/TEST_PLAN.md",
+    `# Test Plan — ${ctx.artifacts.featureTitle}\n\n${data.plan}\n\n## Requirements Traceability Matrix\n\n${data.traceability}\n`,
+    `docs(${slug}): test plan and traceability matrix`
+  );
   const commit = await commitFile(
     ctx.gh.token,
     ref,
     branch,
     "src/app.test.ts",
     data.source,
-    `test(${slug}): vitest coverage for the logic core`
+    `test(${slug}): full vitest suite for the logic core`
   );
 
   return {
-    output: `${data.note}\n\n\`\`\`typescript\n${data.source}\n\`\`\`\n\n_CI is now running these tests on the PR._`,
+    output: `${data.note}\n\n${data.plan}\n\n## Requirements Traceability Matrix\n\n${data.traceability}\n\n\`\`\`typescript\n${data.source}\n\`\`\`\n\n_CI is now running these tests on the PR._`,
     links: [
-      { label: "Test commit", url: commit.html_url },
+      { label: "Test plan + RTM", url: planCommit.html_url },
+      { label: "Test suite commit", url: commit.html_url },
       { label: "CI runs", url: `${ctx.artifacts.repoUrl}/actions` },
     ],
     model,
@@ -885,13 +915,32 @@ async function runCiVerify(ctx: StageContext): Promise<StageResult> {
   }
 
   if (checks.failed === 0) {
+    // Test closure: compile the summary report — committed to the default
+    // branch so the fresh PR head keeps its green checks.
+    const summary = `# Test Summary — ${artifacts.featureTitle}\n\n## Results\n${checkLines}\n\n- Checks passed: ${checks.total}/${checks.total} (100% pass rate)\n- Defect fix cycles during verification: ${attempts}\n- Review verdict: ${artifacts.reviewVerdict ?? "n/a"}${artifacts.reworked ? " (after one rework iteration)" : ""}\n\n## Closure Notes\n${
+      attempts > 0
+        ? `The build went red during verification; ${attempts} automated fix ${attempts === 1 ? "cycle was" : "cycles were"} applied from the CI failure logs before reaching green.`
+        : "All checks passed on the first verification run — no defects surfaced in CI."
+    }\nAcceptance testing follows at the UAT gate; regression runs on every future commit via CI.\n\n---\n_Compiled by SDLC AI Pipeline at PR head ${artifacts.headSha}._\n`;
+    const summaryCommit = await commitFile(
+      ctx.gh.token,
+      ref,
+      need(artifacts.defaultBranch, "defaultBranch"),
+      "docs/TEST_SUMMARY.md",
+      summary,
+      "docs: test closure summary"
+    ).catch(() => null);
+
     return {
       output: `## CI Green ✅\n\n${checkLines}\n\n${
         attempts > 0
           ? `The build went red and was healed automatically — ${attempts} fix ${attempts === 1 ? "commit" : "commits"} pushed after reading the failure logs.`
           : "All checks passed on the first run — no intervention needed."
-      }`,
-      links: [{ label: "CI runs", url: `${artifacts.repoUrl}/actions` }],
+      }\n\nTest closure report committed as \`docs/TEST_SUMMARY.md\`.`,
+      links: [
+        { label: "CI runs", url: `${artifacts.repoUrl}/actions` },
+        ...(summaryCommit ? [{ label: "Test summary", url: summaryCommit.html_url }] : []),
+      ],
       artifacts: { ...artifacts, ciGreen: true },
     };
   }
@@ -979,19 +1028,20 @@ async function runUat(ctx: StageContext): Promise<StageResult> {
   if (ctx.input && !ctx.input.approved) {
     // UAT rejection: one fix cycle against the stakeholder's feedback.
     const slug = need(artifacts.slug, "slug");
-    const [appTs, mainTs, indexHtml] = await Promise.all([
+    const [appTs, mainTs, indexHtml, suiteTs] = await Promise.all([
       readFileContent(ctx.gh.token, ref, "src/app.ts", branch),
       readFileContent(ctx.gh.token, ref, "src/main.ts", branch),
       readFileContent(ctx.gh.token, ref, "index.html", branch),
+      readFileContent(ctx.gh.token, ref, "src/app.test.ts", branch).catch(() => ""),
     ]);
     const { data, model } = await aiJson(
       ctx.ai,
       `${SHARED_RULES}\nYou are the senior engineer fixing a product that failed user acceptance testing. Address the stakeholder's feedback exactly.`,
-      `Product: "${artifacts.featureTitle}"\n\nUAT feedback from the stakeholder:\n"${ctx.input.comment ?? "No specifics — polish rough edges."}"\n\nCurrent files:\n\n--- src/app.ts ---\n${appTs}\n\n--- src/main.ts ---\n${mainTs}\n\n--- index.html ---\n${indexHtml}\n\n${APP_CONSTRAINTS}\n\nReturn JSON:\n- "note": 2-3 sentence markdown summary of what you changed to satisfy the feedback\n- "files": ONLY the files you changed, each with "path" (src/app.ts, src/main.ts, or index.html) and the COMPLETE revised "content"`,
+      `Product: "${artifacts.featureTitle}"\n\nUAT feedback from the stakeholder:\n"${ctx.input.comment ?? "No specifics — polish rough edges."}"\n\nCurrent files:\n\n--- src/app.ts ---\n${appTs}\n\n--- src/main.ts ---\n${mainTs}\n\n--- index.html ---\n${indexHtml}\n\n--- src/app.test.ts (test suite; keep it passing) ---\n${suiteTs}\n\n${APP_CONSTRAINTS}\n\nReturn JSON:\n- "note": 2-3 sentence markdown summary of what you changed to satisfy the feedback\n- "files": ONLY the files you changed, each with "path" (src/app.ts, src/main.ts, index.html, or src/app.test.ts) and the COMPLETE revised "content". If your changes alter behavior the tests cover, include the updated src/app.test.ts.`,
       z.object({ note: z.string(), files: z.array(FILE_SCHEMA) }),
       0.3
     );
-    const allowed = new Set(["src/app.ts", "src/main.ts", "index.html"]);
+    const allowed = new Set(["src/app.ts", "src/main.ts", "index.html", "src/app.test.ts"]);
     const changed = data.files.filter((f) => allowed.has(f.path));
     if (changed.length === 0) throw new Error("UAT fix cycle produced no file changes");
     for (const f of changed) {

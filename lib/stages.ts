@@ -61,7 +61,7 @@ export const STAGES: StageMeta[] = [
     title: "Requirements Analysis",
     role: "Business Analyst",
     description:
-      "Writes the requirements doc, creates the product's repo (committing the planning docs), and opens the tracking Epic",
+      "Writes the Software Requirement Specification, creates the product's repo (committing the planning docs), and opens the tracking Epic",
   },
   {
     id: "clarify",
@@ -75,14 +75,16 @@ export const STAGES: StageMeta[] = [
     phase: "Requirement Analysis",
     title: "User Stories & Backlog",
     role: "Product Owner",
-    description: "Creates real, estimated tickets with acceptance criteria under the epic",
+    description:
+      "Creates real, estimated tickets with acceptance criteria and MoSCoW priorities under the epic",
   },
   {
     id: "architecture",
     phase: "Design",
     title: "Architecture & Design",
     role: "Software Architect",
-    description: "Cuts the feature branch and commits the architecture doc to it",
+    description:
+      "Cuts the feature branch and commits the design doc — high-level design, low-level design, and a UI wireframe",
   },
   {
     id: "design_approval",
@@ -96,7 +98,8 @@ export const STAGES: StageMeta[] = [
     phase: "Development",
     title: "Implementation",
     role: "Senior Engineer",
-    description: "Builds the working app (UI + logic), opens a pull request, moves tickets along",
+    description:
+      "Builds the working app (UI + logic) with the developer's own unit tests, opens a pull request, moves tickets along",
   },
   {
     id: "review",
@@ -118,7 +121,8 @@ export const STAGES: StageMeta[] = [
     phase: "Testing",
     title: "Test Engineering",
     role: "QA Engineer",
-    description: "Commits Vitest tests for the logic core — CI runs them for real",
+    description:
+      "Writes the test plan and traceability matrix, then commits the full Vitest suite — CI runs it for real",
   },
   {
     id: "ci_verify",

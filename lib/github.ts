@@ -149,6 +149,24 @@ export async function getIssue(token: string, ref: RepoRef, issueNumber: number)
   }>(token, "GET", `/repos/${ref.owner}/${ref.repo}/issues/${issueNumber}`);
 }
 
+export async function listReleases(token: string, ref: RepoRef) {
+  return gh<Array<{ tag_name: string; name: string; html_url: string }>>(
+    token,
+    "GET",
+    `/repos/${ref.owner}/${ref.repo}/releases?per_page=10`
+  );
+}
+
+// End-of-life: archiving freezes the repository read-only.
+export async function archiveRepo(token: string, ref: RepoRef) {
+  return gh<{ archived: boolean; html_url: string }>(
+    token,
+    "PATCH",
+    `/repos/${ref.owner}/${ref.repo}`,
+    { archived: true }
+  );
+}
+
 // The latest published release tag, or null when nothing has shipped yet.
 export async function latestReleaseTag(token: string, ref: RepoRef): Promise<string | null> {
   try {
