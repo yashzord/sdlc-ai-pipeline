@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { serverDefault, aiJson } from "@/lib/ai";
-import { assertCompleteRevision } from "@/lib/pipeline";
+import { filterCompleteRevisions } from "@/lib/pipeline";
+import { CODE_OUTPUT_TOKENS } from "@/lib/ai";
 import { getAISession, getGithubSession } from "@/lib/session";
 import {
   GithubError,
@@ -122,24 +123,32 @@ export async function POST(request: Request) {
       const { data, model } = await aiJson(
         ai,
         `You are a maintenance engineer working on a shipped product. This is ${kind} maintenance: ${engineerBrief} The product is a fully client-side Vite web app (index.html + src/app.ts logic core with zero imports + src/main.ts DOM layer). No external packages, no network calls.`,
-        `Issue #${issue.number}: ${issue.title}\n\n${issue.body ?? "(no description)"}\n\nCurrent files:\n\n--- src/app.ts ---\n${appTs}\n\n--- src/main.ts ---\n${mainTs}\n\n--- index.html ---\n${indexHtml}\n\nReturn JSON:\n- "summary": 2-3 sentence markdown summary of the change and why it resolves the issue\n- "files": ONLY the files you changed (src/app.ts, src/main.ts, or index.html), each with "path" and the COMPLETE revised "content". If tests in src/app.test.ts would now fail because behavior legitimately changed, include the updated src/app.test.ts too.`,
+        `Issue #${issue.number}: ${issue.title}\n\n${issue.body ?? "(no description)"}\n\nCurrent files:\n\n--- src/app.ts ---\n${appTs}\n\n--- src/main.ts ---\n${mainTs}\n\n--- index.html ---\n${indexHtml}\n\nReturn JSON:\n- "summary": 2-3 sentence markdown summary of the change and why it resolves the issue\n- "files": ONLY the files you changed (src/app.ts, src/main.ts, or index.html), each with "path" and the COMPLETE revised "content". Every file you return must be the ENTIRE file, ready to commit as-is: never abbreviate, never elide with comments like "rest unchanged", never return a placeholder or skeleton. If a file would be too long to reproduce in full, OMIT it entirely rather than shortening it. If tests in src/app.test.ts would now fail because behavior legitimately changed, include the updated src/app.test.ts too.`,
         z.object({ summary: z.string(), files: z.array(FILE_SCHEMA) }),
-        0.3
+        0.3,
+        CODE_OUTPUT_TOKENS
       );
 
-      const changed = data.files.filter((f) => ALLOWED_FILES.has(f.path));
-      if (changed.length === 0) {
+      const returned = data.files.filter((f) => ALLOWED_FILES.has(f.path));
+      if (returned.length === 0) {
         return Response.json(
           { error: "The maintenance engineer produced no file changes for this issue" },
           { status: 502 }
         );
       }
-      const maintCurrent: Record<string, string> = {
+      const { valid: changed, skipped } = filterCompleteRevisions(returned, {
         "src/app.ts": appTs,
         "src/main.ts": mainTs,
         "index.html": indexHtml,
-      };
-      for (const f of changed) assertCompleteRevision(f.path, f.content, maintCurrent[f.path]);
+      });
+      if (changed.length === 0) {
+        return Response.json(
+          {
+            error: `The maintenance engineer returned only truncated files, so nothing was committed: ${skipped.join("; ")}. Try shipping this fix again.`,
+          },
+          { status: 502 }
+        );
+      }
 
       const baseSha = await getBranchSha(gh.token, ref, defaultBranch);
       try {
@@ -225,23 +234,31 @@ export async function POST(request: Request) {
         const { data } = await aiJson(
           ai,
           `You are the engineer on call for a red CI build on a maintenance PR. Fix the root cause — never delete or weaken tests to force green. The product is a client-side Vite app; src/app.ts must keep zero imports. The root cause often hides away from the failing assertion — check id/key generation (Date.now() ids collide within one millisecond), state persistence, and fixtures before rewriting the asserted function. Output clean final code only — no debugging narration in comments.`,
-          `The maintenance change (for issue "${issue.title}") broke CI. Failing checks: ${checkLines}\n\nThe intended change:\n${state.summary}\n\nCurrent files:\n\n--- src/app.ts ---\n${appTs}\n\n--- src/app.test.ts ---\n${testTs}\n\n--- src/main.ts ---\n${mainTs}\n\nReturn JSON:\n- "diagnosis": 1-2 sentence root cause\n- "files": ONLY changed files (src/app.ts, src/app.test.ts, src/main.ts, or index.html) with COMPLETE "content"`,
+          `The maintenance change (for issue "${issue.title}") broke CI. Failing checks: ${checkLines}\n\nThe intended change:\n${state.summary}\n\nCurrent files:\n\n--- src/app.ts ---\n${appTs}\n\n--- src/app.test.ts ---\n${testTs}\n\n--- src/main.ts ---\n${mainTs}\n\nReturn JSON:\n- "diagnosis": 1-2 sentence root cause\n- "files": ONLY changed files (src/app.ts, src/app.test.ts, src/main.ts, or index.html) with COMPLETE "content". Every file you return must be the ENTIRE file, ready to commit as-is: never abbreviate, never elide with comments like "rest unchanged", never return a placeholder or skeleton. If a file would be too long to reproduce in full, OMIT it entirely rather than shortening it.`,
           z.object({ diagnosis: z.string(), files: z.array(FILE_SCHEMA) }),
-          0.3
+          0.3,
+          CODE_OUTPUT_TOKENS
         );
-        const changed = data.files.filter((f) => ALLOWED_FILES.has(f.path));
-        if (changed.length === 0) {
+        const returnedFixes = data.files.filter((f) => ALLOWED_FILES.has(f.path));
+        if (returnedFixes.length === 0) {
           return Response.json(
             { error: `CI red and no fix produced. Diagnosis: ${data.diagnosis}` },
             { status: 502 }
           );
         }
-        const healCurrent: Record<string, string> = {
+        const { valid: changed, skipped: healSkipped } = filterCompleteRevisions(returnedFixes, {
           "src/app.ts": appTs,
           "src/app.test.ts": testTs,
           "src/main.ts": mainTs,
-        };
-        for (const f of changed) assertCompleteRevision(f.path, f.content, healCurrent[f.path]);
+        });
+        if (changed.length === 0) {
+          return Response.json(
+            {
+              error: `CI red and the fix came back truncated: ${healSkipped.join("; ")}. Try shipping this fix again.`,
+            },
+            { status: 502 }
+          );
+        }
         for (const f of changed) {
           await commitFile(
             gh.token,
