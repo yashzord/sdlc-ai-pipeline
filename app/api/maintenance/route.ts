@@ -3,11 +3,13 @@ import { createIssue, parseRepo } from "@/lib/github";
 
 export const dynamic = "force-dynamic";
 
-// Maintenance phase intake: corrective (bug) and perfective (enhancement)
-// requests become real, labeled GitHub issues on the shipped product's repo.
+// Maintenance phase intake covering all four canonical maintenance types.
+// Each request becomes a real, labeled GitHub issue on the shipped repo.
 const MAINTENANCE_TYPES = {
   bug: { labels: ["bug", "maintenance"], kind: "Corrective maintenance" },
+  adaptive: { labels: ["adaptive", "maintenance"], kind: "Adaptive maintenance" },
   enhancement: { labels: ["enhancement", "maintenance"], kind: "Perfective maintenance" },
+  preventive: { labels: ["preventive", "maintenance"], kind: "Preventive maintenance" },
 } as const;
 
 interface MaintenanceRequest {
@@ -35,7 +37,9 @@ export async function POST(request: Request) {
   const description = typeof body.description === "string" ? body.description.trim() : "";
   if (!meta || !title || title.length > 120 || description.length > 2_000) {
     return Response.json(
-      { error: "type must be bug|enhancement, title 1-120 chars, description up to 2000" },
+      {
+        error: "type must be bug|adaptive|enhancement|preventive, title 1-120 chars, description up to 2000",
+      },
       { status: 400 }
     );
   }

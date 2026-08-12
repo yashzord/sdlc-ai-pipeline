@@ -86,8 +86,27 @@ export async function POST(request: Request) {
     const issue = await getIssue(gh.token, ref, body.issueNumber);
     const repoInfo = await getRepo(gh.token, ref);
     const defaultBranch = repoInfo.default_branch;
-    const isBug = issue.labels.some((l) => l.name === "bug");
-    const kind = isBug ? "corrective" : "perfective";
+    const labelNames = issue.labels.map((l) => l.name);
+    const kind = labelNames.includes("bug")
+      ? "corrective"
+      : labelNames.includes("adaptive")
+        ? "adaptive"
+        : labelNames.includes("preventive")
+          ? "preventive"
+          : "perfective";
+    const kindTitle = kind.charAt(0).toUpperCase() + kind.slice(1);
+    const commitPrefix =
+      kind === "corrective" ? "fix" : kind === "perfective" ? "feat" : "refactor";
+    const engineerBrief = {
+      corrective:
+        "fix the reported defect at its root cause without breaking existing behavior.",
+      adaptive:
+        "adapt the app to the changed environment/platform described, preserving all existing behavior.",
+      perfective:
+        "implement the requested improvement cleanly within the existing architecture.",
+      preventive:
+        "harden and refactor as described — improve quality, robustness, or maintainability WITHOUT changing observable behavior.",
+    }[kind];
 
     /* ------------------------- phase 1: engineer the fix ------------------------- */
     if (!body.state) {
@@ -101,11 +120,7 @@ export async function POST(request: Request) {
 
       const { data, model } = await aiJson(
         ai,
-        `You are a maintenance engineer working on a shipped product. This is ${kind} maintenance: ${
-          isBug
-            ? "fix the reported defect at its root cause without breaking existing behavior."
-            : "implement the requested improvement cleanly within the existing architecture."
-        } The product is a fully client-side Vite web app (index.html + src/app.ts logic core with zero imports + src/main.ts DOM layer). No external packages, no network calls.`,
+        `You are a maintenance engineer working on a shipped product. This is ${kind} maintenance: ${engineerBrief} The product is a fully client-side Vite web app (index.html + src/app.ts logic core with zero imports + src/main.ts DOM layer). No external packages, no network calls.`,
         `Issue #${issue.number}: ${issue.title}\n\n${issue.body ?? "(no description)"}\n\nCurrent files:\n\n--- src/app.ts ---\n${appTs}\n\n--- src/main.ts ---\n${mainTs}\n\n--- index.html ---\n${indexHtml}\n\nReturn JSON:\n- "summary": 2-3 sentence markdown summary of the change and why it resolves the issue\n- "files": ONLY the files you changed (src/app.ts, src/main.ts, or index.html), each with "path" and the COMPLETE revised "content". If tests in src/app.test.ts would now fail because behavior legitimately changed, include the updated src/app.test.ts too.`,
         z.object({ summary: z.string(), files: z.array(FILE_SCHEMA) }),
         0.3
@@ -134,7 +149,7 @@ export async function POST(request: Request) {
           branch,
           f.path,
           f.content,
-          `${isBug ? "fix" : "feat"}: ${issue.title.slice(0, 60)} (#${issue.number})`
+          `${commitPrefix}: ${issue.title.slice(0, 60)} (#${issue.number})`
         );
       }
 
@@ -145,8 +160,8 @@ export async function POST(request: Request) {
           ref,
           branch,
           defaultBranch,
-          `${isBug ? "fix" : "feat"}: ${issue.title}`,
-          `${kind === "corrective" ? "Corrective" : "Perfective"} maintenance for #${issue.number}.\n\n${data.summary}\n\nCloses #${issue.number}.\n\n---\n_Maintenance cycle run by SDLC AI Pipeline._`
+          `${commitPrefix}: ${issue.title}`,
+          `${kindTitle} maintenance for #${issue.number}.\n\n${data.summary}\n\nCloses #${issue.number}.\n\n---\n_Maintenance cycle run by SDLC AI Pipeline._`
         );
       }
 
@@ -250,7 +265,7 @@ export async function POST(request: Request) {
         ref,
         tag,
         `${tag} — ${kind} maintenance`,
-        `${kind === "corrective" ? "Corrective" : "Perfective"} maintenance release.\n\n**Resolves:** #${issue.number} — ${issue.title}\n\n${state.summary}\n\n---\n_Maintenance cycle run by SDLC AI Pipeline. PR #${state.prNumber}._`
+        `${kindTitle} maintenance release.\n\n**Resolves:** #${issue.number} — ${issue.title}\n\n${state.summary}\n\n---\n_Maintenance cycle run by SDLC AI Pipeline. PR #${state.prNumber}._`
       );
       releaseUrl = release.html_url;
     } catch (err) {
