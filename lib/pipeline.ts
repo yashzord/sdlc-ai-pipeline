@@ -130,6 +130,24 @@ function repoRef(ctx: StageContext): RepoRef {
   return parseRepo(need(ctx.artifacts.repo, "repo"));
 }
 
+// Guard against automated revisions that gut a file. This is a real shipped
+// failure: a rework once replaced the entire 222-line UI with the 12-line
+// scaffold placeholder, CI stayed green, and the placeholder went live.
+export function assertCompleteRevision(path: string, revised: string, current?: string): void {
+  if (path === "index.html") {
+    if (revised.includes("🚧") || !revised.includes("src/main.ts")) {
+      throw new Error(
+        "Revision check failed: index.html came back as a stub/placeholder — refusing to commit it"
+      );
+    }
+  }
+  if (current && current.length > 2_000 && revised.length < current.length * 0.35) {
+    throw new Error(
+      `Revision check failed: ${path} shrank from ${current.length} to ${revised.length} chars — refusing to commit a gutted file`
+    );
+  }
+}
+
 /* ------------------------------ repo scaffold ------------------------------ */
 
 const SCAFFOLD_PACKAGE = (name: string) => `{
@@ -650,6 +668,7 @@ async function runCode(ctx: StageContext): Promise<StageResult> {
   const allowed = new Set(["src/app.ts", "src/main.ts", "index.html", "src/app.test.ts"]);
   const files = data.files.filter((f) => allowed.has(f.path));
   if (files.length < 3) throw new Error("Implementation did not produce the required files");
+  for (const f of files) assertCompleteRevision(f.path, f.content);
 
   let lastSha = "";
   for (const f of files) {
@@ -775,6 +794,13 @@ async function runRework(ctx: StageContext): Promise<StageResult> {
   const allowed = new Set(["src/app.ts", "src/main.ts", "index.html", "src/app.test.ts"]);
   const changed = data.files.filter((f) => allowed.has(f.path));
   if (changed.length === 0) throw new Error("Rework produced no file changes");
+  const reworkCurrent: Record<string, string> = {
+    "src/app.ts": appTs,
+    "src/main.ts": mainTs,
+    "index.html": indexHtml,
+    "src/app.test.ts": devTests,
+  };
+  for (const f of changed) assertCompleteRevision(f.path, f.content, reworkCurrent[f.path]);
 
   let lastSha = "";
   let newModuleSource = ctx.artifacts.moduleSource;
@@ -983,6 +1009,12 @@ async function runCiVerify(ctx: StageContext): Promise<StageResult> {
   if (changed.length === 0) {
     throw new Error(`CI is red and the self-heal produced no fix. Diagnosis: ${data.diagnosis}`);
   }
+  const healCurrent: Record<string, string> = {
+    "src/app.ts": appTs,
+    "src/app.test.ts": testTs,
+    "src/main.ts": mainTs,
+  };
+  for (const f of changed) assertCompleteRevision(f.path, f.content, healCurrent[f.path]);
 
   for (const f of changed) {
     const commit = await commitFile(
@@ -1046,6 +1078,13 @@ async function runUat(ctx: StageContext): Promise<StageResult> {
     const allowed = new Set(["src/app.ts", "src/main.ts", "index.html", "src/app.test.ts"]);
     const changed = data.files.filter((f) => allowed.has(f.path));
     if (changed.length === 0) throw new Error("UAT fix cycle produced no file changes");
+    const uatCurrent: Record<string, string> = {
+      "src/app.ts": appTs,
+      "src/main.ts": mainTs,
+      "index.html": indexHtml,
+      "src/app.test.ts": suiteTs,
+    };
+    for (const f of changed) assertCompleteRevision(f.path, f.content, uatCurrent[f.path]);
     for (const f of changed) {
       const commit = await commitFile(
         ctx.gh.token,
@@ -1263,6 +1302,28 @@ async function runRelease(ctx: StageContext): Promise<StageResult> {
     };
   }
 
+  // Post-deploy smoke test on the critical path: the live page must serve the
+  // real application, not the scaffold placeholder (a failure that shipped once).
+  let smokeLine = "";
+  if (pagesOk && artifacts.pagesUrl) {
+    try {
+      const res = await fetch(artifacts.pagesUrl, { signal: AbortSignal.timeout(15_000) });
+      const body = await res.text();
+      if (!res.ok) {
+        smokeLine = `\n\n**Smoke test:** live URL returned HTTP ${res.status} — verify manually.`;
+      } else if (body.includes("🚧")) {
+        throw new Error(
+          "Post-deploy smoke test FAILED: the live page still serves the scaffold placeholder — the application UI was lost upstream. File a corrective maintenance issue to restore it."
+        );
+      } else {
+        smokeLine = "\n\n**Smoke test:** passed — the live page serves the application.";
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("smoke test FAILED")) throw err;
+      smokeLine = "\n\n**Smoke test:** could not reach the live URL — verify manually.";
+    }
+  }
+
   const links: ArtifactLink[] = [];
   if (pagesOk && artifacts.pagesUrl) links.push({ label: "🌐 Live app", url: artifacts.pagesUrl });
   if (vercelState === "READY" && artifacts.vercelUrl)
@@ -1271,7 +1332,7 @@ async function runRelease(ctx: StageContext): Promise<StageResult> {
   links.push({ label: `Merged PR #${prNumber}`, url: artifacts.prUrl ?? "" });
 
   const deployLine = pagesOk
-    ? `**Live at:** ${artifacts.pagesUrl}`
+    ? `**Live at:** ${artifacts.pagesUrl}${smokeLine}`
     : `**GitHub Pages deploy failed** — check the [deploy run](${pagesRun?.html_url ?? `${artifacts.repoUrl}/actions`}).`;
 
   return {
