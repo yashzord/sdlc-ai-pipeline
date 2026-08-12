@@ -217,7 +217,7 @@ export async function POST(request: Request) {
         ]);
         const { data } = await aiJson(
           ai,
-          `You are the engineer on call for a red CI build on a maintenance PR. Fix the root cause — never delete or weaken tests to force green. The product is a client-side Vite app; src/app.ts must keep zero imports.`,
+          `You are the engineer on call for a red CI build on a maintenance PR. Fix the root cause — never delete or weaken tests to force green. The product is a client-side Vite app; src/app.ts must keep zero imports. The root cause often hides away from the failing assertion — check id/key generation (Date.now() ids collide within one millisecond), state persistence, and fixtures before rewriting the asserted function. Output clean final code only — no debugging narration in comments.`,
           `The maintenance change (for issue "${issue.title}") broke CI. Failing checks: ${checkLines}\n\nThe intended change:\n${state.summary}\n\nCurrent files:\n\n--- src/app.ts ---\n${appTs}\n\n--- src/app.test.ts ---\n${testTs}\n\n--- src/main.ts ---\n${mainTs}\n\nReturn JSON:\n- "diagnosis": 1-2 sentence root cause\n- "files": ONLY changed files (src/app.ts, src/app.test.ts, src/main.ts, or index.html) with COMPLETE "content"`,
           z.object({ diagnosis: z.string(), files: z.array(FILE_SCHEMA) }),
           0.3
