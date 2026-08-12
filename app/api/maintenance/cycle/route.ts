@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { serverDefault, aiJson } from "@/lib/ai";
+import { assertCompleteRevision } from "@/lib/pipeline";
 import { getAISession, getGithubSession } from "@/lib/session";
 import {
   GithubError,
@@ -133,6 +134,12 @@ export async function POST(request: Request) {
           { status: 502 }
         );
       }
+      const maintCurrent: Record<string, string> = {
+        "src/app.ts": appTs,
+        "src/main.ts": mainTs,
+        "index.html": indexHtml,
+      };
+      for (const f of changed) assertCompleteRevision(f.path, f.content, maintCurrent[f.path]);
 
       const baseSha = await getBranchSha(gh.token, ref, defaultBranch);
       try {
@@ -229,6 +236,12 @@ export async function POST(request: Request) {
             { status: 502 }
           );
         }
+        const healCurrent: Record<string, string> = {
+          "src/app.ts": appTs,
+          "src/app.test.ts": testTs,
+          "src/main.ts": mainTs,
+        };
+        for (const f of changed) assertCompleteRevision(f.path, f.content, healCurrent[f.path]);
         for (const f of changed) {
           await commitFile(
             gh.token,
